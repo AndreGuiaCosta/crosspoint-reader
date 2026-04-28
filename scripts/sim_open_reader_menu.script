@@ -1,0 +1,19 @@
+# Diagnostic: open the first recent book, open the reader menu, screenshot.
+# Used to figure out the menu item ordering before writing the sync test.
+log open-menu: start
+expect_timeout 60000
+expect Entering activity: Home
+wait 800
+# Confirm on first recent book (selectorIndex 0).
+tap confirm
+expect Entering activity: EpubReader
+# Loading takes a few seconds for first-time cache build.
+wait 8000
+screenshot /screenshots/menu-00-reader.bmp
+# Confirm opens the reader menu.
+tap confirm
+expect Entering activity: EpubReaderMenu
+wait 600
+screenshot /screenshots/menu-01-open.bmp
+log open-menu: done
+quit

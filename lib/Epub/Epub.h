@@ -30,7 +30,6 @@ class Epub {
   // CSS files
   std::vector<std::string> cssFiles;
 
-  bool findContentOpfFile(std::string* contentOpfFile) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata);
   bool parseTocNcxFile() const;
   bool parseTocNavFile() const;
@@ -44,6 +43,10 @@ class Epub {
   ~Epub() = default;
   std::string& getBasePath() { return contentBasePath; }
   bool load(bool buildIfMissing = true, bool skipLoadingCss = false);
+  // Resolve the OPF rootfile path from META-INF/container.xml. Exposed so
+  // out-of-library callers (e.g. Readest Sync) can re-read the OPF for
+  // fields that BookMetadataCache does not persist (identifiers, author list).
+  bool findContentOpfFile(std::string* contentOpfFile) const;
   bool clearCache() const;
   void setupCacheDir() const;
   const std::string& getCachePath() const;

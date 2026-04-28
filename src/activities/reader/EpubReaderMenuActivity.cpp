@@ -2,6 +2,8 @@
 
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <KOReaderCredentialStore.h>
+#include <ReadestAccountStore.h>
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
@@ -21,19 +23,33 @@ EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInpu
 
 std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes) {
   std::vector<MenuItem> items;
-  items.reserve(10);
-  items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
+  items.reserve(11);
+  items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER, ""});
   if (hasFootnotes) {
-    items.push_back({MenuAction::FOOTNOTES, StrId::STR_FOOTNOTES});
+    items.push_back({MenuAction::FOOTNOTES, StrId::STR_FOOTNOTES, ""});
   }
-  items.push_back({MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION});
-  items.push_back({MenuAction::AUTO_PAGE_TURN, StrId::STR_AUTO_TURN_PAGES_PER_MIN});
-  items.push_back({MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT});
-  items.push_back({MenuAction::SCREENSHOT, StrId::STR_SCREENSHOT_BUTTON});
-  items.push_back({MenuAction::DISPLAY_QR, StrId::STR_DISPLAY_QR});
-  items.push_back({MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON});
-  items.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});
-  items.push_back({MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE});
+  items.push_back({MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION, ""});
+  items.push_back({MenuAction::AUTO_PAGE_TURN, StrId::STR_AUTO_TURN_PAGES_PER_MIN, ""});
+  items.push_back({MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT, ""});
+  items.push_back({MenuAction::SCREENSHOT, StrId::STR_SCREENSHOT_BUTTON, ""});
+  items.push_back({MenuAction::DISPLAY_QR, StrId::STR_DISPLAY_QR, ""});
+  items.push_back({MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON, ""});
+
+  // Sync items — one per configured provider, hidden when the provider has
+  // no credentials. Suffix is a translated StrId (STR_SYNC_SUFFIX_KOREADER /
+  // STR_SYNC_SUFFIX_READEST) so the disambiguation localizes alongside
+  // STR_SYNC_PROGRESS itself.
+  if (KOREADER_STORE.hasCredentials()) {
+    items.push_back(
+        {MenuAction::SYNC_KOREADER, StrId::STR_SYNC_PROGRESS,
+         std::string(I18N.get(StrId::STR_SYNC_PROGRESS)) + " " + I18N.get(StrId::STR_SYNC_SUFFIX_KOREADER)});
+  }
+  if (READEST_STORE.hasCredentials()) {
+    items.push_back({MenuAction::SYNC_READEST, StrId::STR_SYNC_PROGRESS,
+                     std::string(I18N.get(StrId::STR_SYNC_PROGRESS)) + " " + I18N.get(StrId::STR_SYNC_SUFFIX_READEST)});
+  }
+
+  items.push_back({MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE, ""});
   return items;
 }
 
@@ -132,7 +148,9 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
       renderer.fillRect(contentX, displayY, contentWidth - 1, lineHeight, true);
     }
 
-    renderer.drawText(UI_10_FONT_ID, contentX + 20, displayY, I18N.get(menuItems[i].labelId), !isSelected);
+    const char* itemLabel =
+        menuItems[i].overrideLabel.empty() ? I18N.get(menuItems[i].labelId) : menuItems[i].overrideLabel.c_str();
+    renderer.drawText(UI_10_FONT_ID, contentX + 20, displayY, itemLabel, !isSelected);
 
     if (menuItems[i].action == MenuAction::ROTATE_SCREEN) {
       // Render current orientation value on the right edge of the content area.

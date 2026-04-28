@@ -4,6 +4,8 @@ class CrossPointSettings;
 class CrossPointState;
 class WifiCredentialStore;
 class KOReaderCredentialStore;
+class ReadestAccountStore;
+class ReadestLibraryStore;
 class RecentBooksStore;
 class OpdsServerStore;
 
@@ -24,6 +26,14 @@ bool loadWifi(WifiCredentialStore& store, const char* json, bool* needsResave = 
 // KOReaderCredentialStore
 bool saveKOReader(const KOReaderCredentialStore& store, const char* path);
 bool loadKOReader(KOReaderCredentialStore& store, const char* json, bool* needsResave = nullptr);
+
+// ReadestAccountStore
+bool saveReadest(const ReadestAccountStore& store, const char* path);
+bool loadReadest(ReadestAccountStore& store, const char* json);
+
+// ReadestLibraryStore
+bool saveReadestLibrary(const ReadestLibraryStore& store, const char* path);
+bool loadReadestLibrary(ReadestLibraryStore& store, const char* json);
 
 // RecentBooksStore
 bool saveRecentBooks(const RecentBooksStore& store, const char* path);

@@ -1,9 +1,18 @@
 #include "Logging.h"
 
+#include <cstdarg>
+#include <cstdio>
 #include <string>
 
 #define MAX_ENTRY_LEN 256
 #define MAX_LOG_LINES 16
+
+// On real ESP32, MySerialImpl::instance and its inline forwarders are pulled
+// in via Arduino-ESP32's framework symbols + LTO/--gc-sections, so the
+// firmware doesn't ship explicit definitions. The simulator link has no
+// such resolution path; the `crosspoint-simulator` library provides them
+// in its own translation unit (src/MySerialImpl.cpp). Keeping the override
+// out of the firmware avoids a SIMULATOR conditional here.
 
 // Simple ring buffer log, useful for error reporting when we encounter a crash
 RTC_NOINIT_ATTR char logMessages[MAX_LOG_LINES][MAX_ENTRY_LEN];

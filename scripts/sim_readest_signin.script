@@ -1,0 +1,60 @@
+# Validate ReadestAuthActivity end-to-end: sign out, then sign in via the UI.
+# Assumes /readest_creds.txt is NOT present (so the boot probe doesn't auto-
+# sign-in) but the password to type below works against the live account.
+log signin: start
+expect_timeout 45000
+expect Entering activity: Home
+wait 800
+
+# Home → Settings (4 Downs from index 0).
+tap down
+tap down
+tap down
+tap down
+tap confirm
+expect Entering activity: Settings
+wait 600
+
+# Settings: cycle Display → Reader → Controls → System (3 Confirms on the bar).
+tap confirm
+tap confirm
+tap confirm
+wait 300
+
+# Down 5 times to land on Readest Sync (Time to Sleep, Show Hidden Files,
+# WiFi Networks, KOReader Sync, Readest Sync).
+tap down
+tap down
+tap down
+tap down
+tap down
+tap confirm
+expect Entering activity: ReadestSettings
+wait 500
+screenshot /screenshots/signin-01-settings.bmp
+
+# Step 1: Sign Out to clear existing session — verifies the Sign Out path.
+# Items: Email, Sign In, Sign Out, Sync API URL, Supabase URL.
+# Email is highlighted on entry; Down twice to reach Sign Out.
+tap down
+tap down
+tap confirm
+expect Session cleared
+wait 400
+screenshot /screenshots/signin-02-after-signout.bmp
+
+# Step 2: Sign In. Up once to go to Sign In item, Confirm.
+tap up
+tap confirm
+expect Entering activity: ReadestAuth
+# Auth flow: email cached, password keyboard launched immediately.
+expect Entering activity: KeyboardEntry
+wait 400
+type Rlitory720!
+# Simulator WiFi.status() returns WL_CONNECTED, so no WiFi prompt — straight
+# to NTP + signIn HTTPS round-trip.
+expect signIn HTTP 200
+wait 400
+screenshot /screenshots/signin-03-success.bmp
+log signin: success
+quit

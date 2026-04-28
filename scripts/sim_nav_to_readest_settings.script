@@ -1,0 +1,49 @@
+# Walk Home → Settings → System tab → Readest Sync entry. Validates that the
+# script driver can drive multi-step menu navigation and that the new
+# Readest settings entry is reachable.
+log nav: start
+expect_timeout 30000
+expect Entering activity: Home
+wait 500
+screenshot /screenshots/nav-01-home.bmp
+
+# Press down 4 times to land on Settings: with 1 recent book on Home, the
+# selectable order is recent[0], Browse Files, Recent Books, File Transfer,
+# Settings — 4 Downs from the initial recent-book selection.
+tap down
+tap down
+tap down
+tap down
+wait 200
+screenshot /screenshots/nav-02-settings-highlighted.bmp
+
+tap confirm
+expect Entering activity: Settings
+wait 600
+screenshot /screenshots/nav-03-settings-display.bmp
+
+# Index 0 = category bar. Confirm cycles category: Display → Reader → Controls → System.
+tap confirm
+tap confirm
+tap confirm
+wait 300
+screenshot /screenshots/nav-04-settings-system.bmp
+
+# System tab list order: Time to Sleep, Show Hidden Files, WiFi Networks,
+# KOReader Sync, Readest Sync, OPDS Servers, Clear Reading Cache, Language.
+# 5 Downs from the category bar to land on Readest Sync.
+tap down
+tap down
+tap down
+tap down
+tap down
+wait 200
+screenshot /screenshots/nav-05-readest-highlighted.bmp
+
+tap confirm
+expect Entering activity: ReadestSettings
+wait 500
+screenshot /screenshots/nav-06-readest-settings.bmp
+
+log nav: complete
+quit

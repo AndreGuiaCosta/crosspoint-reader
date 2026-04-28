@@ -10,7 +10,10 @@
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
-#include "OtaUpdateActivity.h"
+#include "ReadestSettingsActivity.h"
+#ifndef SIMULATOR
+#include "OtaUpdateActivity.h"  // Pulls in OtaUpdater → ESP-IDF HTTPS OTA APIs unavailable on host.
+#endif
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -48,9 +51,12 @@ void SettingsActivity::onEnter() {
                           SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_READEST_SYNC, SettingAction::ReadestSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
+#ifndef SIMULATOR
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
+#endif
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
 
@@ -177,6 +183,9 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::KOReaderSync:
         startActivityForResult(std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::ReadestSync:
+        startActivityForResult(std::make_unique<ReadestSettingsActivity>(renderer, mappedInput), resultHandler);
+        break;
       case SettingAction::OPDSBrowser:
         startActivityForResult(std::make_unique<OpdsServerListActivity>(renderer, mappedInput), resultHandler);
         break;
@@ -187,7 +196,9 @@ void SettingsActivity::toggleCurrentSetting() {
         startActivityForResult(std::make_unique<ClearCacheActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::CheckForUpdates:
+#ifndef SIMULATOR
         startActivityForResult(std::make_unique<OtaUpdateActivity>(renderer, mappedInput), resultHandler);
+#endif
         break;
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
@@ -230,7 +241,11 @@ void SettingsActivity::render(RenderLock&&) {
            pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.buttonHintsHeight +
                          metrics.verticalSpacing * 2)},
       settingsCount, selectedSettingIndex - 1,
-      [&settings](int index) { return std::string(I18N.get(settings[index].nameId)); }, nullptr, nullptr,
+      [&settings](int index) {
+        return settings[index].overrideLabel.empty() ? std::string(I18N.get(settings[index].nameId))
+                                                     : settings[index].overrideLabel;
+      },
+      nullptr, nullptr,
       [&settings](int i) {
         const auto& setting = settings[i];
         std::string valueText = "";

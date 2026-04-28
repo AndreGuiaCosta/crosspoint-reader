@@ -1,0 +1,9 @@
+# Minimal sanity check: boot completes, log capture works, screenshot writes.
+log smoke test starting
+expect_timeout 20000
+expect Hardware detect: X4
+expect Entering activity: Home
+wait 500
+screenshot /screenshots/smoke-home.bmp
+log smoke test complete
+quit

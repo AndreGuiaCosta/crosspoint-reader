@@ -1,0 +1,43 @@
+# Walk Home → Readest Library entry. Validates Slice 2+3 of Phase 2:
+# the visibility gate (READEST_STORE.hasCredentials) put the entry in the
+# menu, the dispatch route lands in ReadestLibraryActivity, and the activity
+# completes its CHECK_WIFI → LOADING → BROWSING flow against hosted Readest.
+log nav: start
+expect_timeout 30000
+expect Entering activity: Home
+wait 500
+screenshot /screenshots/lib-01-home.bmp
+
+# Selectable order on Home with the Lyra theme (homeRecentBooksCount=1), no
+# OPDS servers, signed-in Readest: recent[0], Browse Files, Recent Books,
+# Readest Library, File Transfer, Settings. 3 Downs from recent[0] → Readest
+# Library.
+tap down
+tap down
+tap down
+wait 200
+screenshot /screenshots/lib-02-readest-highlighted.bmp
+
+tap confirm
+expect Entering activity: ReadestLibrary
+# Cold-cache cover load takes a few seconds per book in the simulator; the
+# JPEG decoder is a no-op stub on the host so most covers will fail to
+# convert and render as blank gutters here. The PNG path and the rendering
+# pipeline still validate. Real-device JPEG decoding is exercised on
+# hardware with a built JPEGDEC.
+expect_timeout 60000
+expect fetching
+expect_timeout 60000
+expect Entering activity: ReadestLibrary
+wait 30000
+screenshot /screenshots/lib-03-library-list.bmp
+
+# Navigate down once — row 2 ("Apothecary 14") is NOT in our library JSON,
+# so the Download button hint should reappear and the row should NOT show
+# the "Downloaded" suffix. Validates the per-row marker toggling.
+tap down
+wait 200
+screenshot /screenshots/lib-04-non-downloaded-row.bmp
+
+log nav: complete
+quit

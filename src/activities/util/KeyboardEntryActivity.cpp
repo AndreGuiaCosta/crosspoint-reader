@@ -2,6 +2,7 @@
 
 #include <HalGPIO.h>
 #include <I18n.h>
+#include <SimulatorTextInput.h>
 
 #include <algorithm>
 
@@ -187,6 +188,15 @@ void KeyboardEntryActivity::mapColContentBottom(int& col, bool goingUp) const {
 }
 
 void KeyboardEntryActivity::loop() {
+  // Test-harness shortcut: a `type <text>` script command queues a string
+  // that the next active KeyboardEntryActivity consumes here, bypassing the
+  // on-screen keyboard navigation. The production no-op returns "" so the
+  // optimiser dead-codes this branch — see lib/TestHooks/SimulatorTextInput.h.
+  if (std::string queued = SimulatorTextInput::consumeQueuedText(); !queued.empty()) {
+    onComplete(std::move(queued));
+    return;
+  }
+
   const int totalRows = getTotalRowCount();
 
   if (!cursorMode && mappedInput.wasPressed(MappedInputManager::Button::Up)) {

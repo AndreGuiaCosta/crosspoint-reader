@@ -1,0 +1,66 @@
+# End-to-end Readest sync from the reader menu. Opens the first recent book,
+# opens the menu, picks "Sync Progress (Readest)" and verifies the full
+# pull/push round-trip lands the SHOWING_RESULT screen.
+#
+# Assumes valid Readest credentials are already persisted (e.g. via prior
+# `sim_readest_signin.script` run or boot-probe). With no creds the menu
+# entry would be hidden and this test would deadlock.
+log reader-sync: start
+expect_timeout 90000
+expect Entering activity: Home
+wait 800
+
+# Open the first recent book.
+tap confirm
+expect Entering activity: EpubReader
+# First-time cache build can take several seconds; second run is faster.
+wait 6000
+screenshot /screenshots/rsync-01-reader-loaded.bmp
+
+# Open the reader menu.
+tap confirm
+expect Entering activity: EpubReaderMenu
+wait 500
+
+# Navigate to Sync Progress (Readest). Menu items at index 0..N for the
+# image-tests fixture (no footnotes, no kosync creds):
+#   0 Select Chapter
+#   1 Reading Orientation
+#   2 Auto Turn
+#   3 Go to %
+#   4 Take screenshot
+#   5 Show page as QR
+#   6 Go Home
+#   7 Sync Progress (Readest)
+#   8 Delete Book Cache
+tap down
+tap down
+tap down
+tap down
+tap down
+tap down
+tap down
+wait 200
+screenshot /screenshots/rsync-02-menu-readest-highlighted.bmp
+
+# Activate. Menu activity returns the action; reader handler launches
+# ReadestSyncActivity which runs WiFi (already up in sim) → NTP → hash →
+# pull → SHOWING_RESULT (or NO_REMOTE_PROGRESS if no prior sync).
+tap confirm
+expect Entering activity: ReadestSync
+wait 400
+
+# The push-then-pull round-trip from the boot probe earlier seeded a sync
+# row under sentinel hash `cc..cc`, NOT under this real EPUB's hash, so
+# the first real-EPUB sync should land at NO_REMOTE_PROGRESS. We just want
+# to confirm the activity gets that far without erroring.
+# `expect` is a substring match, not regex.
+expect_timeout 30000
+expect book_hash=
+expect_timeout 30000
+expect pull HTTP 200
+wait 1000
+screenshot /screenshots/rsync-03-result.bmp
+
+log reader-sync: complete
+quit

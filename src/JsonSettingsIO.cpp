@@ -12,6 +12,8 @@
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
 #include "OpdsServerStore.h"
+#include "ReadestAccountStore.h"
+#include "ReadestLibraryStore.h"
 #include "RecentBooksStore.h"
 #include "SettingsList.h"
 #include "WifiCredentialStore.h"
@@ -260,6 +262,85 @@ bool JsonSettingsIO::loadKOReader(KOReaderCredentialStore& store, const char* js
   store.matchMethod = static_cast<DocumentMatchMethod>(method);
 
   LOG_DBG("KRS", "Loaded KOReader credentials for user: %s", store.username.c_str());
+  return true;
+}
+
+// ---- ReadestAccountStore ----
+
+bool JsonSettingsIO::saveReadest(const ReadestAccountStore& store, const char* path) {
+  JsonDocument doc;
+  // Endpoint overrides — empty fields fall back to hosted defaults at read time.
+  doc["syncApiBase"] = store.getSyncApiBaseRaw();
+  doc["supabaseUrl"] = store.getSupabaseUrlRaw();
+  doc["supabaseAnonKey"] = store.getSupabaseAnonKeyRaw();
+  // Identity + session. Tokens stored as plain JSON per V1 decision: they
+  // expire hourly and only protect one user's reading progress on this SD.
+  doc["userEmail"] = store.getUserEmail();
+  doc["userId"] = store.getUserId();
+  doc["accessToken"] = store.getAccessToken();
+  doc["refreshToken"] = store.getRefreshToken();
+  doc["expiresAt"] = store.getExpiresAt();
+  doc["expiresIn"] = store.getExpiresIn();
+  doc["lastConfigsSyncAtMs"] = store.getLastConfigsSyncAtMs();
+
+  String json;
+  serializeJson(doc, json);
+  return Storage.writeFile(path, json);
+}
+
+bool JsonSettingsIO::loadReadest(ReadestAccountStore& store, const char* json) {
+  JsonDocument doc;
+  auto error = deserializeJson(doc, json);
+  if (error) {
+    LOG_ERR("RAS", "JSON parse error: %s", error.c_str());
+    return false;
+  }
+
+  store.syncApiBase = doc["syncApiBase"] | std::string("");
+  store.supabaseUrl = doc["supabaseUrl"] | std::string("");
+  store.supabaseAnonKey = doc["supabaseAnonKey"] | std::string("");
+  store.userEmail = doc["userEmail"] | std::string("");
+  store.userId = doc["userId"] | std::string("");
+  store.accessToken = doc["accessToken"] | std::string("");
+  store.refreshToken = doc["refreshToken"] | std::string("");
+  store.expiresAt = doc["expiresAt"] | static_cast<int64_t>(0);
+  store.expiresIn = doc["expiresIn"] | static_cast<int64_t>(0);
+  store.lastConfigsSyncAtMs = doc["lastConfigsSyncAtMs"] | static_cast<int64_t>(0);
+
+  LOG_DBG("RAS", "Loaded Readest account: user=%s hasToken=%d", store.userEmail.c_str(), !store.accessToken.empty());
+  return true;
+}
+
+// ---- ReadestLibraryStore ----
+
+bool JsonSettingsIO::saveReadestLibrary(const ReadestLibraryStore& store, const char* path) {
+  JsonDocument doc;
+  JsonObject entries = doc["entries"].to<JsonObject>();
+  for (const auto& kv : store.hashToPath) {
+    entries[kv.first] = kv.second;
+  }
+  String json;
+  serializeJson(doc, json);
+  return Storage.writeFile(path, json);
+}
+
+bool JsonSettingsIO::loadReadestLibrary(ReadestLibraryStore& store, const char* json) {
+  JsonDocument doc;
+  auto error = deserializeJson(doc, json);
+  if (error) {
+    LOG_ERR("RLS", "JSON parse error: %s", error.c_str());
+    return false;
+  }
+  store.hashToPath.clear();
+  JsonObjectConst entries = doc["entries"].as<JsonObjectConst>();
+  for (JsonPairConst kv : entries) {
+    const std::string hash(kv.key().c_str());
+    const std::string path = kv.value() | std::string("");
+    if (!hash.empty() && !path.empty()) {
+      store.hashToPath[hash] = path;
+    }
+  }
+  LOG_DBG("RLS", "Loaded Readest library: %u entries", static_cast<unsigned>(store.hashToPath.size()));
   return true;
 }
 

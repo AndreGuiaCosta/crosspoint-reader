@@ -22,6 +22,8 @@
 #include "MappedInputManager.h"
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
+#include "ReadestAccountStore.h"
+#include "ReadestSyncActivity.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -398,35 +400,51 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       requestUpdate();
       break;
     }
-    case EpubReaderMenuActivity::MenuAction::SYNC: {
-      if (KOREADER_STORE.hasCredentials()) {
-        const int currentPage = section ? section->currentPage : nextPageNumber;
-        const int totalPages = section ? section->pageCount : cachedChapterTotalPageCount;
-        std::optional<uint16_t> paragraphIndex;
-        if (section && currentPage >= 0 && currentPage < section->pageCount) {
-          const uint16_t paragraphPage =
-              currentPage > 0 ? static_cast<uint16_t>(currentPage - 1) : static_cast<uint16_t>(currentPage);
-          if (const auto pIdx = section->getParagraphIndexForPage(paragraphPage)) {
-            paragraphIndex = *pIdx;
-          }
+    case EpubReaderMenuActivity::MenuAction::SYNC_KOREADER:
+    case EpubReaderMenuActivity::MenuAction::SYNC_READEST: {
+      // Both sync providers share the same launch contract: snapshot
+      // (currentPage, totalPages, paragraphIndex) for the active section
+      // and the same SyncResult-adopting completion handler. Only the
+      // concrete Activity class and credential gate differ.
+      const bool haveKoreader = KOREADER_STORE.hasCredentials();
+      const bool haveReadest = READEST_STORE.hasCredentials();
+      const bool wantKoreader = action == EpubReaderMenuActivity::MenuAction::SYNC_KOREADER;
+      if ((wantKoreader && !haveKoreader) || (!wantKoreader && !haveReadest)) break;
+
+      const int curPage = section ? section->currentPage : nextPageNumber;
+      const int totalPages = section ? section->pageCount : cachedChapterTotalPageCount;
+      std::optional<uint16_t> paragraphIndex;
+      if (section && curPage >= 0 && curPage < section->pageCount) {
+        const uint16_t paragraphPage =
+            curPage > 0 ? static_cast<uint16_t>(curPage - 1) : static_cast<uint16_t>(curPage);
+        if (const auto pIdx = section->getParagraphIndexForPage(paragraphPage)) {
+          paragraphIndex = *pIdx;
         }
+      }
+
+      auto onComplete = [this](const ActivityResult& result) {
+        if (result.isCancelled) return;
+        const auto& sync = std::get<SyncResult>(result.data);
+        if (currentSpineIndex == sync.spineIndex && (!section || section->currentPage == sync.page)) return;
+        RenderLock lock(*this);
+        currentSpineIndex = sync.spineIndex;
+        nextPageNumber = sync.page;
+        cachedChapterTotalPageCount = 0;  // Prevent rescaling sync page
+        pendingPageJump.reset();
+        saveProgress(currentSpineIndex, nextPageNumber, 0);
+        section.reset();
+      };
+
+      if (wantKoreader) {
         startActivityForResult(
             std::make_unique<KOReaderSyncActivity>(renderer, mappedInput, epub, epub->getPath(), currentSpineIndex,
-                                                   currentPage, totalPages, paragraphIndex),
-            [this](const ActivityResult& result) {
-              if (!result.isCancelled) {
-                const auto& sync = std::get<SyncResult>(result.data);
-                if (currentSpineIndex != sync.spineIndex || (section && section->currentPage != sync.page)) {
-                  RenderLock lock(*this);
-                  currentSpineIndex = sync.spineIndex;
-                  nextPageNumber = sync.page;
-                  cachedChapterTotalPageCount = 0;  // Prevent rescaling sync page
-                  pendingPageJump.reset();
-                  saveProgress(currentSpineIndex, nextPageNumber, 0);
-                  section.reset();
-                }
-              }
-            });
+                                                   curPage, totalPages, paragraphIndex),
+            std::move(onComplete));
+      } else {
+        startActivityForResult(
+            std::make_unique<ReadestSyncActivity>(renderer, mappedInput, epub, epub->getPath(), currentSpineIndex,
+                                                  curPage, totalPages, paragraphIndex),
+            std::move(onComplete));
       }
       break;
     }

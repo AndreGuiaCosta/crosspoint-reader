@@ -16,6 +16,7 @@
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
+#include "ReadestAccountStore.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -26,6 +27,9 @@ int HomeActivity::getMenuItemCount() const {
     count += recentBooks.size();
   }
   if (hasOpdsServers) {
+    count++;
+  }
+  if (hasReadestAccount) {
     count++;
   }
   return count;
@@ -112,6 +116,7 @@ void HomeActivity::onEnter() {
   Activity::onEnter();
 
   hasOpdsServers = OPDS_STORE.hasServers();
+  hasReadestAccount = READEST_STORE.hasCredentials();
 
   selectorIndex = 0;
 
@@ -191,6 +196,7 @@ void HomeActivity::loop() {
     const int fileBrowserIdx = idx++;
     const int recentsIdx = idx++;
     const int opdsLibraryIdx = hasOpdsServers ? idx++ : -1;
+    const int readestLibraryIdx = hasReadestAccount ? idx++ : -1;
     const int fileTransferIdx = idx++;
     const int settingsIdx = idx;
 
@@ -202,6 +208,8 @@ void HomeActivity::loop() {
       onRecentsOpen();
     } else if (menuSelectedIndex == opdsLibraryIdx) {
       onOpdsBrowserOpen();
+    } else if (menuSelectedIndex == readestLibraryIdx) {
+      onReadestLibraryOpen();
     } else if (menuSelectedIndex == fileTransferIdx) {
       onFileTransferOpen();
     } else if (menuSelectedIndex == settingsIdx) {
@@ -232,6 +240,13 @@ void HomeActivity::render(RenderLock&&) {
   if (hasOpdsServers) {
     menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
     menuIcons.insert(menuIcons.begin() + 2, Library);
+  }
+  // Insert after the OPDS entry so cloud-library siblings sit together
+  // (Recents → OPDS → Readest → File Transfer → Settings).
+  if (hasReadestAccount) {
+    const size_t insertAt = hasOpdsServers ? 3 : 2;
+    menuItems.insert(menuItems.begin() + insertAt, tr(STR_READEST_LIBRARY));
+    menuIcons.insert(menuIcons.begin() + insertAt, Library);
   }
 
   GUI.drawButtonMenu(
@@ -268,3 +283,5 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
+
+void HomeActivity::onReadestLibraryOpen() { activityManager.goToReadestLibrary(); }

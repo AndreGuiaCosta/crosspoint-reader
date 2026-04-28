@@ -1007,7 +1007,11 @@ void CrossPointWebServer::handleDelete() const {
   String failedItems;
 
   for (const auto& p : paths) {
-    auto itemPath = p.as<String>();
+    // ArduinoJson v7 removed implicit conversion to Arduino String — go
+    // through const char* (null-safe via String's nullptr-tolerant ctor)
+    // so this compiles on both Arduino-ESP32 and the native simulator.
+    const char* raw = p.as<const char*>();
+    String itemPath(raw ? raw : "");
 
     // Validate path
     if (itemPath.isEmpty() || itemPath == "/") {

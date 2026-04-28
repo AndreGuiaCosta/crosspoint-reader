@@ -21,10 +21,16 @@ enum class SettingAction {
   ClearCache,
   CheckForUpdates,
   Language,
+  ReadestSync,
 };
 
 struct SettingInfo {
   StrId nameId;
+  // When non-empty, displayed in place of I18N.get(nameId). Lets new device-
+  // only ACTION items add labels without minting StrIds (which requires a
+  // YAML pass across all 22 translations). Apply sparingly — i18n is the
+  // long-term answer.
+  std::string overrideLabel;
   SettingType type;
   uint8_t CrossPointSettings::* valuePtr = nullptr;
   std::vector<StrId> enumValues;
@@ -79,9 +85,10 @@ struct SettingInfo {
     return s;
   }
 
-  static SettingInfo Action(StrId nameId, SettingAction action) {
+  static SettingInfo Action(StrId nameId, SettingAction action, std::string overrideLabel = "") {
     SettingInfo s;
     s.nameId = nameId;
+    s.overrideLabel = std::move(overrideLabel);
     s.type = SettingType::ACTION;
     s.action = action;
     return s;

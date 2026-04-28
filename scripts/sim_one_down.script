@@ -1,0 +1,22 @@
+log one-tap test
+expect_timeout 30000
+expect Entering activity: Home
+wait 800
+screenshot /screenshots/one-00-home.bmp
+tap down
+wait 500
+screenshot /screenshots/one-01-after-1-down.bmp
+tap down
+wait 500
+screenshot /screenshots/one-02-after-2-down.bmp
+tap down
+wait 500
+screenshot /screenshots/one-03-after-3-down.bmp
+tap down
+wait 500
+screenshot /screenshots/one-04-after-4-down.bmp
+tap down
+wait 500
+screenshot /screenshots/one-05-after-5-down.bmp
+log done
+quit

@@ -20,8 +20,9 @@ class EpubReaderMenuActivity final : public Activity {
     SCREENSHOT,
     DISPLAY_QR,
     GO_HOME,
-    SYNC,
-    DELETE_CACHE
+    SYNC_KOREADER,  // formerly MenuAction::SYNC; renamed for the dual-provider menu
+    DELETE_CACHE,
+    SYNC_READEST,
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
@@ -38,6 +39,11 @@ class EpubReaderMenuActivity final : public Activity {
   struct MenuItem {
     MenuAction action;
     StrId labelId;
+    // When non-empty, used in place of I18N.get(labelId). Carrying provider-
+    // disambiguation suffixes ("Sync (KOReader)", "Sync (Readest)") here lets
+    // us split the SYNC item without minting two new StrId entries (which
+    // would require a YAML pass across all 22 translations).
+    std::string overrideLabel;
   };
 
   static std::vector<MenuItem> buildMenuItems(bool hasFootnotes);
