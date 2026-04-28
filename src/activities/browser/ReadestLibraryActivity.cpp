@@ -8,10 +8,12 @@
 #include <Logging.h>
 #include <PngToBmpConverter.h>
 #include <ReadestAccountStore.h>
+#include <ReadestBookCatalog.h>
 #include <ReadestLibraryStore.h>
 #include <ReadestStorageCoordinator.h>
 #include <WiFi.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
 
@@ -90,6 +92,7 @@ void ReadestLibraryActivity::onEnter() {
   state = State::CHECK_WIFI;
   books.clear();
   selectorIndex = 0;
+  loadedCoverPage = -1;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
   downloadProgress = downloadTotal = 0;
@@ -152,19 +155,19 @@ void ReadestLibraryActivity::loop() {
     if (!books.empty()) {
       buttonNavigator.onNextRelease([this] {
         selectorIndex = ButtonNavigator::nextIndex(selectorIndex, books.size());
-        requestUpdate();
+        onSelectorMoved();
       });
       buttonNavigator.onPreviousRelease([this] {
         selectorIndex = ButtonNavigator::previousIndex(selectorIndex, books.size());
-        requestUpdate();
+        onSelectorMoved();
       });
       buttonNavigator.onNextContinuous([this] {
         selectorIndex = ButtonNavigator::nextPageIndex(selectorIndex, books.size(), PAGE_ITEMS);
-        requestUpdate();
+        onSelectorMoved();
       });
       buttonNavigator.onPreviousContinuous([this] {
         selectorIndex = ButtonNavigator::previousPageIndex(selectorIndex, books.size(), PAGE_ITEMS);
-        requestUpdate();
+        onSelectorMoved();
       });
     }
   }
@@ -262,64 +265,91 @@ void ReadestLibraryActivity::render(RenderLock&&) {
 
 void ReadestLibraryActivity::fetchBooks() {
   std::string err;
-  std::vector<ReadestStorageClient::BookRow> all;
+  std::vector<ReadestStorageClient::BookRow> delta;
   int64_t maxUpdatedAtMs = 0;
-  // V1 of phase 2: full pull every time. Delta cursor (`since=last`) lands
-  // alongside the already-downloaded marker in slice 5.
-  const auto rc = ReadestStorageCoordinator::pullBooksSinceWithRefresh(0, &all, &maxUpdatedAtMs, &err);
+  // Incremental pull. `cursor=0` on first run does a full scan; subsequent
+  // entries only get rows touched since the last successful merge — much
+  // faster on a stable account, and the response size scales with churn
+  // rather than total library size.
+  const int64_t cursor = READEST_CATALOG.getCursorMs();
+  const auto rc = ReadestStorageCoordinator::pullBooksSinceWithRefresh(cursor, &delta, &maxUpdatedAtMs, &err);
   if (rc != ReadestStorageClient::OK) {
     LOG_ERR("RLIB", "books pull failed: %s (%s)", ReadestStorageClient::errorString(rc), err.c_str());
-    state = State::ERROR;
-    errorMessage = err.empty() ? std::string(ReadestStorageClient::errorString(rc)) : err;
-    requestUpdate();
-    return;
+    // Offline fallback: if we have cached rows, render those instead of
+    // erroring out. The user can still browse and re-download books that
+    // were synced before connectivity dropped.
+    if (READEST_CATALOG.getBooks().empty()) {
+      state = State::ERROR;
+      errorMessage = err.empty() ? std::string(ReadestStorageClient::errorString(rc)) : err;
+      requestUpdate();
+      return;
+    }
+    LOG_DBG("RLIB", "pull failed, falling back to %u cached rows",
+            static_cast<unsigned>(READEST_CATALOG.getBooks().size()));
+  } else {
+    READEST_CATALOG.mergeDelta(delta, maxUpdatedAtMs);
+    LOG_DBG("RLIB", "delta pull: %u changed rows, cursor → %lld", static_cast<unsigned>(delta.size()),
+            static_cast<long long>(READEST_CATALOG.getCursorMs()));
   }
 
-  // Show only books that actually have a file in cloud storage and are not
-  // soft-deleted (handoff §13.2). Local already-downloaded suppression
-  // arrives in slice 5 — for now, the same book can be downloaded again.
+  // Filter the catalog for display: only rows with a cloud file present.
+  // Soft-deletes are dropped at merge time so we don't filter them again.
   books.clear();
-  books.reserve(all.size());
-  for (auto& row : all) {
-    if (row.uploadedAtMs > 0 && !row.deleted && !row.hash.empty()) {
-      books.push_back(std::move(row));
+  books.reserve(READEST_CATALOG.getBooks().size());
+  for (const auto& row : READEST_CATALOG.getBooks()) {
+    if (row.uploadedAtMs > 0 && !row.hash.empty()) {
+      books.push_back(row);
     }
   }
 
   selectorIndex = 0;
-  // Covers are downloaded synchronously here so the list renders complete
-  // on first display. After first run the BMPs are cached on SD; subsequent
-  // entries skip already-cached books and only fetch what's new.
-  loadCovers();
+  loadedCoverPage = -1;
   state = State::BROWSING;
+  // Empty library is a valid state (new account, all deleted, …) — render
+  // STR_NO_ENTRIES rather than treating it as an error.
   if (books.empty()) {
-    // Empty library is a valid state (new account, all deleted, …) — render
-    // STR_NO_ENTRIES rather than treating it as an error.
-    LOG_DBG("RLIB", "books pull returned no downloadable rows");
+    LOG_DBG("RLIB", "no downloadable rows after filter");
+    requestUpdate();
+    return;
   }
+  // Only fetch covers for the first page; subsequent pages load lazily as
+  // the user navigates into them. Bounds the cold-start wait at PAGE_ITEMS
+  // covers regardless of how many books the account has.
+  loadCoversForPage(0);
   requestUpdate();
 }
 
-void ReadestLibraryActivity::loadCovers() {
-  if (books.empty()) return;
+void ReadestLibraryActivity::loadCoversForPage(int pageIndex) {
+  if (books.empty() || pageIndex == loadedCoverPage) return;
+
+  const size_t pageStart = static_cast<size_t>(pageIndex) * PAGE_ITEMS;
+  if (pageStart >= books.size()) {
+    loadedCoverPage = pageIndex;
+    return;
+  }
+  const size_t pageEnd = std::min(pageStart + static_cast<size_t>(PAGE_ITEMS), books.size());
+
   Storage.mkdir(COVER_CACHE_DIR);
 
-  // First pass — figure out which books still need covers. Avoids touching
-  // the network on a warm cache and lets us show a useful "n/m" counter.
+  // Identify just the missing covers on this page so a warm cache is a no-op.
   std::vector<size_t> missing;
-  missing.reserve(books.size());
-  for (size_t i = 0; i < books.size(); i++) {
+  missing.reserve(pageEnd - pageStart);
+  for (size_t i = pageStart; i < pageEnd; i++) {
     if (!Storage.exists(coverBmpPath(books[i].hash).c_str())) {
       missing.push_back(i);
     }
   }
   if (missing.empty()) {
-    LOG_DBG("RLIB", "all %u covers already cached", static_cast<unsigned>(books.size()));
+    loadedCoverPage = pageIndex;
     return;
   }
-  LOG_DBG("RLIB", "fetching %u covers (out of %u books)", static_cast<unsigned>(missing.size()),
-          static_cast<unsigned>(books.size()));
+  LOG_DBG("RLIB", "fetching %u covers for page %d", static_cast<unsigned>(missing.size()), pageIndex);
 
+  // Hide the list and show a status counter while the page's covers fetch.
+  // We restore the previous state afterwards so callers don't need to know
+  // we briefly transitioned out of BROWSING.
+  const State prev = state;
+  state = State::LOADING;
   for (size_t k = 0; k < missing.size(); k++) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "Loading covers %u/%u", static_cast<unsigned>(k + 1),
@@ -329,10 +359,18 @@ void ReadestLibraryActivity::loadCovers() {
 
     if (!ensureCoverCached(books[missing[k]])) {
       // Soft-fail: missing covers render as a blank gutter — no need to
-      // abort the activity over a single bad cover.
+      // abort the page load over a single bad cover.
       LOG_DBG("RLIB", "cover fetch failed for hash=%.8s…", books[missing[k]].hash.c_str());
     }
   }
+  loadedCoverPage = pageIndex;
+  state = prev;
+  requestUpdate();
+}
+
+void ReadestLibraryActivity::onSelectorMoved() {
+  loadCoversForPage(selectorIndex / PAGE_ITEMS);
+  requestUpdate();
 }
 
 bool ReadestLibraryActivity::ensureCoverCached(const ReadestStorageClient::BookRow& book) {
@@ -434,9 +472,8 @@ void ReadestLibraryActivity::downloadBook(const ReadestStorageClient::BookRow& b
     return;
   }
 
-  // 2. Sign the book key. Cover signing lands in slice 4 alongside the
-  //    actual cover-rendering code path; the bytes are useless to us until
-  //    that side exists.
+  // 2. Sign the book key. Cover keys are signed separately by the cover
+  //    fetch path; here we only need the EPUB.
   std::map<std::string, std::string> urls;
   err.clear();
   rc = ReadestStorageCoordinator::getDownloadUrlsWithRefresh({bookKey}, &urls, &err);

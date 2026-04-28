@@ -4,6 +4,7 @@
 #include <I18n.h>
 #include <ReadestAccountStore.h>
 #include <ReadestAuthClient.h>
+#include <ReadestBookCatalog.h>
 
 #include "MappedInputManager.h"
 #include "ReadestAuthActivity.h"
@@ -87,6 +88,11 @@ void ReadestSettingsActivity::handleSelection() {
     // Best-effort server-side revoke + always-clear-locally is the contract
     // documented on ReadestAuthClient::signOut.
     ReadestAuthClient::signOut();
+    // Wipe the cached catalog so a different user signing in next sees their
+    // own library, not the previous account's. Downloaded EPUBs and the
+    // hash→path map deliberately stay on SD — the user can keep reading
+    // local copies regardless of session state.
+    READEST_CATALOG.clear();
     requestUpdate();
   } else if (selectedIndex == ITEM_SYNC_API_URL) {
     const std::string current = READEST_STORE.getSyncApiBaseRaw();

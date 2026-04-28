@@ -21,6 +21,7 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "ReadestAccountStore.h"
+#include "ReadestBookCatalog.h"
 #include "ReadestLibraryStore.h"
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
@@ -263,6 +264,7 @@ void setup() {
   OPDS_STORE.loadFromFile();
   READEST_STORE.loadFromFile();
   READEST_LIB_STORE.loadFromFile();
+  READEST_CATALOG.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 

@@ -35,6 +35,9 @@ class ReadestLibraryActivity final : public Activity {
   State state = State::LOADING;
   std::vector<ReadestStorageClient::BookRow> books;
   int selectorIndex = 0;
+  // Page index (selectorIndex / PAGE_ITEMS) whose covers we last fetched.
+  // -1 means "no covers loaded yet"; reset to -1 whenever `books` changes.
+  int loadedCoverPage = -1;
   std::string statusMessage;
   std::string errorMessage;
   size_t downloadProgress = 0;
@@ -44,8 +47,9 @@ class ReadestLibraryActivity final : public Activity {
   void launchWifiSelection();
   void onWifiSelectionComplete(bool connected);
   void fetchBooks();
-  void loadCovers();
+  void loadCoversForPage(int pageIndex);
   bool ensureCoverCached(const ReadestStorageClient::BookRow& book);
   void downloadBook(const ReadestStorageClient::BookRow& book);
+  void onSelectorMoved();
   bool preventAutoSleep() override { return true; }
 };

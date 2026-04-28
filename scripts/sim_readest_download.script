@@ -1,0 +1,45 @@
+# End-to-end Readest Library download. Walks Home → Readest Library →
+# Confirm on the top row → waits for the two-step (list+sign) + HTTP GET
+# pipeline to finish → screenshots the resulting "Downloaded" suffix.
+# Assumes valid Readest credentials are already persisted and the library
+# JSON has been wiped so the top row is undeleted/un-marked.
+log download: start
+expect_timeout 30000
+expect Entering activity: Home
+wait 500
+
+# Lyra theme: 1 recent book + Browse Files + Recent Books + Readest Library
+# means 3 Downs from recent[0] → Readest Library.
+tap down
+tap down
+tap down
+wait 200
+
+tap confirm
+expect Entering activity: ReadestLibrary
+# Books pull (~400 ms) + cover fetch (cold cache; 9 covers, all JPEG so all
+# fail to decode in the sim — gutters render blank). Just wait for the list.
+expect_timeout 60000
+expect fetching
+expect_timeout 60000
+expect cover fetch failed for hash=ccbae4f9
+wait 500
+screenshot /screenshots/dl-01-list-cold.bmp
+
+# Top row is "The Apothecary Diaries: Volume 15" (~25 MB EPUB on hosted
+# Readest). Confirm to download it. The activity goes:
+#   list → sign → HttpDownloader::downloadToFile → BROWSING + recordDownload.
+tap confirm
+expect Entering activity: ReadestLibrary
+wait 200
+screenshot /screenshots/dl-02-downloading.bmp
+
+# Wait for the download to land. RLS log line on success is the canonical
+# end-of-flow marker. Budget is generous because the EPUB is multi-MB.
+expect_timeout 180000
+expect Recorded download
+wait 500
+screenshot /screenshots/dl-03-after-download.bmp
+
+log download: complete
+quit

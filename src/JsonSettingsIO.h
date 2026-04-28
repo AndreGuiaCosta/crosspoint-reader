@@ -6,6 +6,7 @@ class WifiCredentialStore;
 class KOReaderCredentialStore;
 class ReadestAccountStore;
 class ReadestLibraryStore;
+class ReadestBookCatalog;
 class RecentBooksStore;
 class OpdsServerStore;
 
@@ -34,6 +35,10 @@ bool loadReadest(ReadestAccountStore& store, const char* json);
 // ReadestLibraryStore
 bool saveReadestLibrary(const ReadestLibraryStore& store, const char* path);
 bool loadReadestLibrary(ReadestLibraryStore& store, const char* json);
+
+// ReadestBookCatalog
+bool saveReadestCatalog(const ReadestBookCatalog& cat, const char* path);
+bool loadReadestCatalog(ReadestBookCatalog& cat, const char* json);
 
 // RecentBooksStore
 bool saveRecentBooks(const RecentBooksStore& store, const char* path);

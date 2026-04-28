@@ -13,6 +13,7 @@
 #include "KOReaderCredentialStore.h"
 #include "OpdsServerStore.h"
 #include "ReadestAccountStore.h"
+#include "ReadestBookCatalog.h"
 #include "ReadestLibraryStore.h"
 #include "RecentBooksStore.h"
 #include "SettingsList.h"
@@ -341,6 +342,63 @@ bool JsonSettingsIO::loadReadestLibrary(ReadestLibraryStore& store, const char* 
     }
   }
   LOG_DBG("RLS", "Loaded Readest library: %u entries", static_cast<unsigned>(store.hashToPath.size()));
+  return true;
+}
+
+// ---- ReadestBookCatalog ----
+
+bool JsonSettingsIO::saveReadestCatalog(const ReadestBookCatalog& cat, const char* path) {
+  JsonDocument doc;
+  doc["cursor_ms"] = cat.cursorMs;
+  JsonArray arr = doc["books"].to<JsonArray>();
+  for (const auto& b : cat.books) {
+    JsonObject obj = arr.add<JsonObject>();
+    obj["hash"] = b.hash;
+    obj["metaHash"] = b.metaHash;
+    obj["format"] = b.format;
+    obj["title"] = b.title;
+    obj["sourceTitle"] = b.sourceTitle;
+    obj["author"] = b.author;
+    obj["progressCurrent"] = b.progressCurrent;
+    obj["progressTotal"] = b.progressTotal;
+    obj["uploadedAtMs"] = b.uploadedAtMs;
+    obj["updatedAtMs"] = b.updatedAtMs;
+    // `deleted` is intentionally omitted — soft-deleted rows are dropped at
+    // merge time and never reach disk.
+  }
+  String json;
+  serializeJson(doc, json);
+  return Storage.writeFile(path, json);
+}
+
+bool JsonSettingsIO::loadReadestCatalog(ReadestBookCatalog& cat, const char* json) {
+  JsonDocument doc;
+  auto error = deserializeJson(doc, json);
+  if (error) {
+    LOG_ERR("RBC", "JSON parse error: %s", error.c_str());
+    return false;
+  }
+  cat.cursorMs = doc["cursor_ms"] | 0LL;
+  cat.books.clear();
+  JsonArrayConst arr = doc["books"].as<JsonArrayConst>();
+  cat.books.reserve(arr.size());
+  for (JsonObjectConst obj : arr) {
+    ReadestStorageClient::BookRow b;
+    b.hash = obj["hash"] | std::string("");
+    if (b.hash.empty()) continue;
+    b.metaHash = obj["metaHash"] | std::string("");
+    b.format = obj["format"] | std::string("");
+    b.title = obj["title"] | std::string("");
+    b.sourceTitle = obj["sourceTitle"] | std::string("");
+    b.author = obj["author"] | std::string("");
+    b.progressCurrent = obj["progressCurrent"] | 0;
+    b.progressTotal = obj["progressTotal"] | 0;
+    b.uploadedAtMs = obj["uploadedAtMs"] | 0LL;
+    b.updatedAtMs = obj["updatedAtMs"] | 0LL;
+    cat.books.push_back(std::move(b));
+  }
+  LOG_DBG("RBC", "Loaded Readest catalog: %u books, cursor=%lld", static_cast<unsigned>(cat.books.size()),
+          static_cast<long long>(cat.cursorMs));
   return true;
 }
 
