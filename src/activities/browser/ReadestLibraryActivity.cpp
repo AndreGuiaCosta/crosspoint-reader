@@ -365,6 +365,11 @@ void ReadestLibraryActivity::loadCoversForPage(int pageIndex) {
   }
   loadedCoverPage = pageIndex;
   state = prev;
+  // Marker for scripted UI tests: deterministic end-of-page-load signal.
+  // Fires after every cover on this page has been attempted, regardless of
+  // individual success or failure — useful as a "list is ready to render"
+  // sentinel without coupling to the success/fail counts.
+  LOG_DBG("RLIB", "covers ready for page %d", pageIndex);
   requestUpdate();
 }
 

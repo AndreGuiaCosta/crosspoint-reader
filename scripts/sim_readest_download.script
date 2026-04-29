@@ -17,12 +17,14 @@ wait 200
 
 tap confirm
 expect Entering activity: ReadestLibrary
-# Books pull (~400 ms) + cover fetch (cold cache; 9 covers, all JPEG so all
-# fail to decode in the sim — gutters render blank). Just wait for the list.
+# Books pull (~400 ms) + cover fetch (cold cache; 9 covers, libjpeg-turbo
+# decodes them on the host). The "covers ready for page 0" debug line is the
+# canonical end-of-load sentinel — emitted after every cover on the visible
+# page has been attempted regardless of success.
 expect_timeout 60000
 expect fetching
 expect_timeout 60000
-expect cover fetch failed for hash=ccbae4f9
+expect covers ready for page 0
 wait 500
 screenshot /screenshots/dl-01-list-cold.bmp
 
