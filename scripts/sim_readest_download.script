@@ -17,14 +17,11 @@ wait 200
 
 tap confirm
 expect Entering activity: ReadestLibrary
-# Books pull (~400 ms) + cover fetch (cold cache; 9 covers, libjpeg-turbo
-# decodes them on the host). The "covers ready for page 0" debug line is the
-# canonical end-of-load sentinel — emitted after every cover on the visible
-# page has been attempted regardless of success.
+# Books pull (~400 ms). The "library ready" debug line is the canonical
+# end-of-load sentinel — emitted after fetchBooks finishes the delta merge
+# regardless of pull success / cache fallback.
 expect_timeout 60000
-expect fetching
-expect_timeout 60000
-expect covers ready for page 0
+expect library ready
 wait 500
 screenshot /screenshots/dl-01-list-cold.bmp
 

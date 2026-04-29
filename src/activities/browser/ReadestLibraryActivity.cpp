@@ -1,20 +1,14 @@
 #include "ReadestLibraryActivity.h"
 
-#include <Bitmap.h>
 #include <Epub.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
-#include <JpegToBmpConverter.h>
 #include <Logging.h>
-#include <PngToBmpConverter.h>
-#include <ReadestAccountStore.h>
 #include <ReadestBookCatalog.h>
 #include <ReadestLibraryStore.h>
 #include <ReadestStorageCoordinator.h>
 #include <WiFi.h>
 
-#include <algorithm>
-#include <cstdio>
 #include <map>
 
 #include "MappedInputManager.h"
@@ -27,62 +21,20 @@
 namespace {
 constexpr int PAGE_ITEMS = 23;
 
-// Keys ending with this suffix are the cover image; everything else under
-// the same book_hash group is the book file (handoff §14.4.3).
-constexpr char COVER_KEY_SUFFIX[] = "/cover.png";
-
-// Where cached cover thumbnails live. We store post-conversion BMPs (one
-// per book_hash) and discard the source PNG after each conversion to keep
-// SD usage low — typical Readest covers are several MB compressed but
-// boil down to <1 KB at thumbnail resolution.
-constexpr char COVER_CACHE_DIR[] = "/.crosspoint/readest_covers";
-
-// Thumbnail dimensions tuned to the 30 px row height: 24×28 fits inside
-// the row's selector fill and still leaves room for a 2:3 book aspect
-// ratio. Text starts at ROW_TEXT_X (after the cover gutter).
-constexpr int COVER_THUMB_WIDTH = 24;
-constexpr int COVER_THUMB_HEIGHT = 28;
 constexpr int ROW_HEIGHT = 30;
 constexpr int ROW_LIST_TOP = 60;
-constexpr int ROW_COVER_X = 8;
-constexpr int ROW_TEXT_X = 42;
+constexpr int ROW_TEXT_X = 8;
 constexpr int ROW_RIGHT_PAD = 20;
+
+// Keys ending with this suffix are the cover image; everything else under
+// the same book_hash group is the book file (handoff §14.4.3). We don't
+// render covers in this list, but we still need to recognise them so the
+// download path picks the EPUB row rather than the cover.
+constexpr char COVER_KEY_SUFFIX[] = "/cover.png";
 
 bool isCoverKey(const std::string& key) {
   if (key.size() < sizeof(COVER_KEY_SUFFIX) - 1) return false;
   return key.compare(key.size() - (sizeof(COVER_KEY_SUFFIX) - 1), sizeof(COVER_KEY_SUFFIX) - 1, COVER_KEY_SUFFIX) == 0;
-}
-
-// "<userId>/Readest/Books/<hash>/cover.png" — handoff §14.5. The cover
-// filename is the only piece of the file_key that's identical between S3
-// and R2 deployments, so we can construct the key directly without going
-// through `listFilesByBookHash` per cover.
-std::string buildCoverKey(const std::string& userId, const std::string& hash) {
-  return userId + "/Readest/Books/" + hash + "/cover.png";
-}
-
-std::string coverBmpPath(const std::string& hash) { return std::string(COVER_CACHE_DIR) + "/" + hash + ".bmp"; }
-
-std::string coverImgTempPath(const std::string& hash) {
-  // Single staging path regardless of format — we sniff magic bytes after
-  // the GET completes and dispatch to the right decoder.
-  return std::string(COVER_CACHE_DIR) + "/" + hash + ".img";
-}
-
-enum class CoverFormat { Unknown, Png, Jpeg };
-
-// Sniff the first few bytes to figure out the encoding. Hosted Readest
-// stores cover.png keys regardless of the actual upload — in practice
-// most are JPEG, with the rest typically PNG. We need to detect at the
-// byte level rather than trusting the key name.
-CoverFormat sniffCoverFormat(FsFile& file) {
-  uint8_t magic[4] = {0};
-  file.seek(0);
-  if (file.read(magic, sizeof(magic)) != sizeof(magic)) return CoverFormat::Unknown;
-  file.seek(0);
-  if (magic[0] == 0x89 && magic[1] == 'P' && magic[2] == 'N' && magic[3] == 'G') return CoverFormat::Png;
-  if (magic[0] == 0xFF && magic[1] == 0xD8 && magic[2] == 0xFF) return CoverFormat::Jpeg;
-  return CoverFormat::Unknown;
 }
 }  // namespace
 
@@ -92,7 +44,6 @@ void ReadestLibraryActivity::onEnter() {
   state = State::CHECK_WIFI;
   books.clear();
   selectorIndex = 0;
-  loadedCoverPage = -1;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
   downloadProgress = downloadTotal = 0;
@@ -155,19 +106,19 @@ void ReadestLibraryActivity::loop() {
     if (!books.empty()) {
       buttonNavigator.onNextRelease([this] {
         selectorIndex = ButtonNavigator::nextIndex(selectorIndex, books.size());
-        onSelectorMoved();
+        requestUpdate();
       });
       buttonNavigator.onPreviousRelease([this] {
         selectorIndex = ButtonNavigator::previousIndex(selectorIndex, books.size());
-        onSelectorMoved();
+        requestUpdate();
       });
       buttonNavigator.onNextContinuous([this] {
         selectorIndex = ButtonNavigator::nextPageIndex(selectorIndex, books.size(), PAGE_ITEMS);
-        onSelectorMoved();
+        requestUpdate();
       });
       buttonNavigator.onPreviousContinuous([this] {
         selectorIndex = ButtonNavigator::previousPageIndex(selectorIndex, books.size(), PAGE_ITEMS);
-        onSelectorMoved();
+        requestUpdate();
       });
     }
   }
@@ -232,19 +183,6 @@ void ReadestLibraryActivity::render(RenderLock&&) {
       const bool inverted = i != static_cast<size_t>(selectorIndex);
       const bool isDownloaded = READEST_LIB_STORE.hasLocalCopy(book.hash);
 
-      // Draw the cached cover thumbnail in the left gutter. A missing or
-      // unreadable BMP renders as blank space — preferable to a fallback
-      // icon that competes visually with the surrounding text.
-      const std::string bmpPath = coverBmpPath(book.hash);
-      FsFile coverFile;
-      if (Storage.openFileForRead("RLIB", bmpPath.c_str(), coverFile)) {
-        Bitmap bitmap(coverFile);
-        if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-          renderer.drawBitmap(bitmap, ROW_COVER_X, rowY - 1, COVER_THUMB_WIDTH, COVER_THUMB_HEIGHT);
-        }
-        coverFile.close();
-      }
-
       std::string displayText = book.title;
       if (!book.author.empty()) displayText += " - " + book.author;
 
@@ -303,141 +241,12 @@ void ReadestLibraryActivity::fetchBooks() {
   }
 
   selectorIndex = 0;
-  loadedCoverPage = -1;
   state = State::BROWSING;
-  // Empty library is a valid state (new account, all deleted, …) — render
-  // STR_NO_ENTRIES rather than treating it as an error.
-  if (books.empty()) {
-    LOG_DBG("RLIB", "no downloadable rows after filter");
-    requestUpdate();
-    return;
-  }
-  // Only fetch covers for the first page; subsequent pages load lazily as
-  // the user navigates into them. Bounds the cold-start wait at PAGE_ITEMS
-  // covers regardless of how many books the account has.
-  loadCoversForPage(0);
+  // Marker for scripted UI tests: deterministic "list is ready to render"
+  // sentinel that fires once on every entry regardless of success/cache
+  // path / fallback.
+  LOG_DBG("RLIB", "library ready: %u books", static_cast<unsigned>(books.size()));
   requestUpdate();
-}
-
-void ReadestLibraryActivity::loadCoversForPage(int pageIndex) {
-  if (books.empty() || pageIndex == loadedCoverPage) return;
-
-  const size_t pageStart = static_cast<size_t>(pageIndex) * PAGE_ITEMS;
-  if (pageStart >= books.size()) {
-    loadedCoverPage = pageIndex;
-    return;
-  }
-  const size_t pageEnd = std::min(pageStart + static_cast<size_t>(PAGE_ITEMS), books.size());
-
-  Storage.mkdir(COVER_CACHE_DIR);
-
-  // Identify just the missing covers on this page so a warm cache is a no-op.
-  std::vector<size_t> missing;
-  missing.reserve(pageEnd - pageStart);
-  for (size_t i = pageStart; i < pageEnd; i++) {
-    if (!Storage.exists(coverBmpPath(books[i].hash).c_str())) {
-      missing.push_back(i);
-    }
-  }
-  if (missing.empty()) {
-    loadedCoverPage = pageIndex;
-    return;
-  }
-  LOG_DBG("RLIB", "fetching %u covers for page %d", static_cast<unsigned>(missing.size()), pageIndex);
-
-  // Hide the list and show a status counter while the page's covers fetch.
-  // We restore the previous state afterwards so callers don't need to know
-  // we briefly transitioned out of BROWSING.
-  const State prev = state;
-  state = State::LOADING;
-  for (size_t k = 0; k < missing.size(); k++) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "Loading covers %u/%u", static_cast<unsigned>(k + 1),
-                  static_cast<unsigned>(missing.size()));
-    statusMessage = buf;
-    requestUpdate(true);
-
-    if (!ensureCoverCached(books[missing[k]])) {
-      // Soft-fail: missing covers render as a blank gutter — no need to
-      // abort the page load over a single bad cover.
-      LOG_DBG("RLIB", "cover fetch failed for hash=%.8s…", books[missing[k]].hash.c_str());
-    }
-  }
-  loadedCoverPage = pageIndex;
-  state = prev;
-  // Marker for scripted UI tests: deterministic end-of-page-load signal.
-  // Fires after every cover on this page has been attempted, regardless of
-  // individual success or failure — useful as a "list is ready to render"
-  // sentinel without coupling to the success/fail counts.
-  LOG_DBG("RLIB", "covers ready for page %d", pageIndex);
-  requestUpdate();
-}
-
-void ReadestLibraryActivity::onSelectorMoved() {
-  loadCoversForPage(selectorIndex / PAGE_ITEMS);
-  requestUpdate();
-}
-
-bool ReadestLibraryActivity::ensureCoverCached(const ReadestStorageClient::BookRow& book) {
-  const std::string bmpPath = coverBmpPath(book.hash);
-  if (Storage.exists(bmpPath.c_str())) return true;
-
-  const std::string userId = READEST_STORE.getUserId();
-  if (userId.empty()) return false;
-  const std::string coverKey = buildCoverKey(userId, book.hash);
-
-  // Sign just this one key. Batching across all missing covers would be a
-  // single round trip, but presigned URLs expire in 30 min — if the user
-  // has hundreds of new books on a slow connection a single batch could
-  // stale before we reach the last download. One sign per cover is
-  // simpler and the per-call overhead is small (~100–300 ms).
-  std::map<std::string, std::string> urls;
-  std::string err;
-  const auto rc = ReadestStorageCoordinator::getDownloadUrlsWithRefresh({coverKey}, &urls, &err);
-  if (rc != ReadestStorageClient::OK) {
-    LOG_DBG("RLIB", "cover sign failed for %.8s…: %s", book.hash.c_str(), err.c_str());
-    return false;
-  }
-  const auto it = urls.find(coverKey);
-  if (it == urls.end() || it->second.empty()) return false;
-
-  // Stage to a single .img path regardless of encoding. The hosted Readest
-  // stores covers at the "cover.png" key but the actual bytes can be either
-  // PNG or JPEG depending on what the user uploaded — we sniff magic bytes
-  // and dispatch to the right decoder. Source file is dropped after
-  // conversion regardless of result; thumbnails are <1 KB so SD pressure
-  // is negligible.
-  const std::string imgPath = coverImgTempPath(book.hash);
-  if (HttpDownloader::downloadToFile(it->second, imgPath) != HttpDownloader::OK) return false;
-
-  bool ok = false;
-  {
-    FsFile imgFile;
-    FsFile bmpFile;
-    if (Storage.openFileForRead("RLIB", imgPath.c_str(), imgFile) &&
-        Storage.openFileForWrite("RLIB", bmpPath.c_str(), bmpFile)) {
-      const CoverFormat fmt = sniffCoverFormat(imgFile);
-      switch (fmt) {
-        case CoverFormat::Png:
-          ok = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(imgFile, bmpFile, COVER_THUMB_WIDTH,
-                                                                 COVER_THUMB_HEIGHT);
-          break;
-        case CoverFormat::Jpeg:
-          ok = JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(imgFile, bmpFile, COVER_THUMB_WIDTH,
-                                                                   COVER_THUMB_HEIGHT);
-          break;
-        case CoverFormat::Unknown:
-          LOG_DBG("RLIB", "cover for %.8s… is neither PNG nor JPEG — skipping", book.hash.c_str());
-          break;
-      }
-    }
-  }
-  Storage.remove(imgPath.c_str());
-  if (!ok) {
-    Storage.remove(bmpPath.c_str());
-    return false;
-  }
-  return true;
 }
 
 void ReadestLibraryActivity::downloadBook(const ReadestStorageClient::BookRow& book) {
