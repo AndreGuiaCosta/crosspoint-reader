@@ -26,10 +26,6 @@ constexpr int ROW_LIST_TOP = 60;
 constexpr int ROW_TEXT_X = 8;
 constexpr int ROW_RIGHT_PAD = 20;
 
-// Keys ending with this suffix are the cover image; everything else under
-// the same book_hash group is the book file (handoff §14.4.3). We don't
-// render covers in this list, but we still need to recognise them so the
-// download path picks the EPUB row rather than the cover.
 constexpr char COVER_KEY_SUFFIX[] = "/cover.png";
 
 bool isCoverKey(const std::string& key) {
@@ -55,7 +51,6 @@ void ReadestLibraryActivity::onEnter() {
 void ReadestLibraryActivity::onExit() {
   Activity::onExit();
   WiFi.mode(WIFI_OFF);
-  books.clear();
 }
 
 void ReadestLibraryActivity::loop() {
@@ -63,11 +58,7 @@ void ReadestLibraryActivity::loop() {
 
   if (state == State::ERROR) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      // Match ReadestSyncActivity: status-only check. The simulator's
-      // IPAddress::operator!= always returns false so a localIP check
-      // would force WIFI_SELECTION even when the libcurl-backed mock can
-      // already reach the network — and on real hardware status alone is
-      // sufficient to attempt a fetch.
+      // Status-only — sim's IPAddress::operator!= always returns false.
       if (WiFi.status() == WL_CONNECTED) {
         state = State::LOADING;
         statusMessage = tr(STR_LOADING);
@@ -93,9 +84,6 @@ void ReadestLibraryActivity::loop() {
 
   if (state == State::BROWSING) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      // Suppress re-download for books already pulled via this activity.
-      // The button hint disappears for these rows so the no-op matches
-      // what the user sees.
       if (!books.empty() && !READEST_LIB_STORE.hasLocalCopy(books[selectorIndex].hash)) {
         downloadBook(books[selectorIndex]);
       }
@@ -160,9 +148,6 @@ void ReadestLibraryActivity::render(RenderLock&&) {
     return;
   }
 
-  // BROWSING — paged flat list of `books`. Confirm action is Download for
-  // un-downloaded rows; for already-downloaded rows the action label is
-  // hidden so users see immediately that the row is inert.
   const bool selectedDownloaded = !books.empty() && READEST_LIB_STORE.hasLocalCopy(books[selectorIndex].hash);
   const char* confirmLabel = selectedDownloaded ? "" : tr(STR_DOWNLOAD);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", tr(STR_DIR_DOWN));
@@ -186,8 +171,6 @@ void ReadestLibraryActivity::render(RenderLock&&) {
       std::string displayText = book.title;
       if (!book.author.empty()) displayText += " - " + book.author;
 
-      // Reserve space at the right for the "Downloaded" suffix when the
-      // row qualifies — otherwise the title gets the whole row.
       const int titleMaxWidth = pageWidth - ROW_TEXT_X - ROW_RIGHT_PAD - (isDownloaded ? downloadedSuffixWidth + 8 : 0);
       auto item = renderer.truncatedText(UI_10_FONT_ID, displayText.c_str(), titleMaxWidth);
       renderer.drawText(UI_10_FONT_ID, ROW_TEXT_X, rowY, item.c_str(), inverted);
@@ -230,8 +213,6 @@ void ReadestLibraryActivity::fetchBooks() {
             static_cast<long long>(READEST_CATALOG.getCursorMs()));
   }
 
-  // Filter the catalog for display: only rows with a cloud file present.
-  // Soft-deletes are dropped at merge time so we don't filter them again.
   books.clear();
   books.reserve(READEST_CATALOG.getBooks().size());
   for (const auto& row : READEST_CATALOG.getBooks()) {
@@ -242,9 +223,6 @@ void ReadestLibraryActivity::fetchBooks() {
 
   selectorIndex = 0;
   state = State::BROWSING;
-  // Marker for scripted UI tests: deterministic "list is ready to render"
-  // sentinel that fires once on every entry regardless of success/cache
-  // path / fallback.
   LOG_DBG("RLIB", "library ready: %u books", static_cast<unsigned>(books.size()));
   requestUpdate();
 }
@@ -255,11 +233,6 @@ void ReadestLibraryActivity::downloadBook(const ReadestStorageClient::BookRow& b
   downloadProgress = downloadTotal = 0;
   requestUpdate(true);
 
-  // 1. Discover the canonical file_keys for this book group. Always go via
-  //    list rather than guessing — handoff §14.2 / §14.4.4 — because the
-  //    hosted backend uses R2 and the file_keys carry a sanitized title,
-  //    not the hash, so a constructed S3-style key would only work via the
-  //    server's fallback path.
   std::vector<ReadestStorageClient::FileRow> files;
   std::string err;
   auto rc = ReadestStorageCoordinator::listFilesByBookHashWithRefresh(book.hash, &files, &err);
@@ -286,8 +259,6 @@ void ReadestLibraryActivity::downloadBook(const ReadestStorageClient::BookRow& b
     return;
   }
 
-  // 2. Sign the book key. Cover keys are signed separately by the cover
-  //    fetch path; here we only need the EPUB.
   std::map<std::string, std::string> urls;
   err.clear();
   rc = ReadestStorageCoordinator::getDownloadUrlsWithRefresh({bookKey}, &urls, &err);
@@ -307,9 +278,6 @@ void ReadestLibraryActivity::downloadBook(const ReadestStorageClient::BookRow& b
     return;
   }
 
-  // 3. Stream bytes from the presigned URL to SD. Path matches OPDS
-  //    convention so downloaded books appear in the file browser the same
-  //    way regardless of source.
   const std::string filename =
       "/" + StringUtils::sanitizeFilename(book.title + (book.author.empty() ? "" : " - " + book.author)) + ".epub";
   LOG_DBG("RLIB", "Downloading: hash=%.8s… -> %s", book.hash.c_str(), filename.c_str());
@@ -323,8 +291,6 @@ void ReadestLibraryActivity::downloadBook(const ReadestStorageClient::BookRow& b
 
   if (result == HttpDownloader::OK) {
     Epub(filename, "/.crosspoint").clearCache();
-    // Persist (hash → local path) so the marker shows on the next render
-    // and re-download is suppressed across activity restarts.
     READEST_LIB_STORE.recordDownload(book.hash, filename);
     state = State::BROWSING;
   } else {

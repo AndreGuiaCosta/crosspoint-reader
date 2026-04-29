@@ -34,6 +34,8 @@ bool ReadestBookCatalog::loadFromFile() {
 }
 
 size_t ReadestBookCatalog::mergeDelta(const std::vector<ReadestStorageClient::BookRow>& delta, int64_t maxUpdatedAtMs) {
+  if (delta.empty() && maxUpdatedAtMs <= cursorMs) return books.size();
+
   for (const auto& row : delta) {
     if (row.hash.empty()) continue;
     auto it = std::find_if(books.begin(), books.end(),

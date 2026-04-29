@@ -28,9 +28,6 @@ bool ReadestLibraryStore::loadFromFile() {
     return false;
   }
   if (!JsonSettingsIO::loadReadestLibrary(*this, json.c_str())) return false;
-  // After loading, drop entries whose file no longer exists on SD —
-  // typically the user deleted via the file browser between sessions.
-  // Re-save only if anything was actually purged.
   if (purgeMissing() > 0) saveToFile();
   return true;
 }

@@ -6,19 +6,13 @@
 #include <ReadestTlsConfig.h>
 #include <WiFiClientSecure.h>
 
-#include <cctype>
-
 #include "ReadestAccountStore.h"
+#include "ReadestTimeUtils.h"
 
 namespace {
-// Match the budgets used by ReadestSyncClient (handoff §4.3). The storage
-// list/download endpoints share the same Next.js handlers and DB roundtrip
-// shape as /sync, so the same window applies.
 constexpr int STORAGE_CONNECT_TIMEOUT = 5000;
 constexpr int STORAGE_READ_TIMEOUT = 10000;
 
-// All-zero book_hash sentinel from the server's "empty books" hotfix
-// (handoff §13.1). Filter at the client so activities never see it.
 constexpr char DUMMY_BOOK_HASH[] = "00000000000000000000000000000000";
 
 void configureTls(WiFiClientSecure& client) { ReadestTls::configure(client); }
@@ -48,41 +42,6 @@ void extractErrorMessage(const String& body, std::string* errMsg) {
   if (!msg.empty()) *errMsg = std::move(msg);
 }
 
-// ISO-8601 → unix ms. Same algorithm as ReadestSyncClient::parseIso8601ToMs;
-// duplicated here to avoid coupling the two clients via a shared internal
-// header. Howard Hinnant's days_from_civil so we don't depend on platform
-// timegm() — newlib has it, glibc has it, neither guarantee is worth a
-// future debugging session.
-int64_t parseIso8601ToMs(const std::string& iso) {
-  int Y = 0, M = 0, D = 0, h = 0, m = 0, s = 0;
-  if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &Y, &M, &D, &h, &m, &s) != 6) return 0;
-  int ms = 0;
-  const size_t dot = iso.find('.', 19);
-  if (dot != std::string::npos) {
-    int frac = 0, digits = 0;
-    for (size_t i = dot + 1; i < iso.size() && std::isdigit(static_cast<unsigned char>(iso[i])) && digits < 3;
-         ++i, ++digits) {
-      frac = frac * 10 + (iso[i] - '0');
-    }
-    while (digits < 3) {
-      frac *= 10;
-      ++digits;
-    }
-    ms = frac;
-  }
-  Y -= M <= 2;
-  const int era = (Y >= 0 ? Y : Y - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(Y - era * 400);
-  const unsigned doy = (153u * (M > 2 ? M - 3 : M + 9) + 2u) / 5u + D - 1;
-  const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
-  const int64_t days = static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
-  return days * 86400000LL + static_cast<int64_t>(h) * 3600000LL + static_cast<int64_t>(m) * 60000LL +
-         static_cast<int64_t>(s) * 1000LL + ms;
-}
-
-// books table response is snake_case (server-side column names). `progress`
-// is a JSON array on books (NOT stringified — that quirk is configs-only,
-// handoff §13.5).
 void rowToBook(JsonObjectConst row, ReadestStorageClient::BookRow& out) {
   out.hash = row["book_hash"] | std::string("");
   out.metaHash = row["meta_hash"] | std::string("");
@@ -98,9 +57,9 @@ void rowToBook(JsonObjectConst row, ReadestStorageClient::BookRow& out) {
   }
 
   const std::string uploadedAt = row["uploaded_at"] | std::string("");
-  out.uploadedAtMs = parseIso8601ToMs(uploadedAt);
+  out.uploadedAtMs = ReadestTimeUtils::parseIso8601ToMs(uploadedAt);
   const std::string updatedAt = row["updated_at"] | std::string("");
-  out.updatedAtMs = parseIso8601ToMs(updatedAt);
+  out.updatedAtMs = ReadestTimeUtils::parseIso8601ToMs(updatedAt);
   const std::string deletedAt = row["deleted_at"] | std::string("");
   out.deleted = !deletedAt.empty();
 }
@@ -110,7 +69,7 @@ void rowToFile(JsonObjectConst row, ReadestStorageClient::FileRow& out) {
   out.fileSize = row["file_size"] | static_cast<int64_t>(0);
   out.bookHash = row["book_hash"] | std::string("");
   const std::string updatedAt = row["updated_at"] | std::string("");
-  out.updatedAtMs = parseIso8601ToMs(updatedAt);
+  out.updatedAtMs = ReadestTimeUtils::parseIso8601ToMs(updatedAt);
 }
 }  // namespace
 
@@ -160,7 +119,7 @@ ReadestStorageClient::Error ReadestStorageClient::pullBooksSince(int64_t sinceMs
   for (JsonObjectConst row : doc["books"].as<JsonArrayConst>()) {
     BookRow parsed;
     rowToBook(row, parsed);
-    if (parsed.hash == DUMMY_BOOK_HASH) continue;  // handoff §13.1
+    if (parsed.hash == DUMMY_BOOK_HASH) continue;
     if (maxUpdatedAtMs && parsed.updatedAtMs > *maxUpdatedAtMs) {
       *maxUpdatedAtMs = parsed.updatedAtMs;
     }
@@ -179,7 +138,6 @@ ReadestStorageClient::Error ReadestStorageClient::listFilesByBookHash(const std:
     return NO_AUTH;
   }
 
-  // bookHash is 32-hex; no encoding needed.
   const std::string url = READEST_STORE.getSyncApiBase() + "/storage/list?bookHash=" + bookHash;
   LOG_DBG("RSTOR", "list: %s", url.c_str());
 
@@ -233,7 +191,6 @@ ReadestStorageClient::Error ReadestStorageClient::getDownloadUrls(const std::vec
   const std::string url = READEST_STORE.getSyncApiBase() + "/storage/download";
   LOG_DBG("RSTOR", "sign: %s (%u keys)", url.c_str(), static_cast<unsigned>(fileKeys.size()));
 
-  // Body shape: { "fileKeys": ["...","..."] } — handoff §14.4.2.
   JsonDocument req;
   JsonArray arr = req["fileKeys"].to<JsonArray>();
   for (const auto& key : fileKeys) arr.add(key);
@@ -268,8 +225,6 @@ ReadestStorageClient::Error ReadestStorageClient::getDownloadUrls(const std::vec
   }
 
   if (!outUrls) return OK;
-  // Response: { "downloadUrls": { "<key>": "<signed-url>", ... } }. Keys
-  // the server couldn't resolve are simply absent from the map.
   JsonObjectConst urls = doc["downloadUrls"].as<JsonObjectConst>();
   for (JsonPairConst kv : urls) {
     const char* signed_url = kv.value().as<const char*>();

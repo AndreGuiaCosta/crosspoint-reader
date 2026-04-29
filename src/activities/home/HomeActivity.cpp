@@ -241,8 +241,6 @@ void HomeActivity::render(RenderLock&&) {
     menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
     menuIcons.insert(menuIcons.begin() + 2, Library);
   }
-  // Insert after the OPDS entry so cloud-library siblings sit together
-  // (Recents → OPDS → Readest → File Transfer → Settings).
   if (hasReadestAccount) {
     const size_t insertAt = hasOpdsServers ? 3 : 2;
     menuItems.insert(menuItems.begin() + insertAt, tr(STR_READEST_LIBRARY));

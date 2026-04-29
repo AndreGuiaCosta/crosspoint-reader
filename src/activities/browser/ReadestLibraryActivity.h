@@ -7,17 +7,6 @@
 #include "../Activity.h"
 #include "util/ButtonNavigator.h"
 
-/**
- * Browse and download books from the user's Readest cloud library.
- *
- * Mirrors `OpdsBookBrowserActivity`'s state machine and download UX so the
- * two cloud-library entry points feel identical to the user. Pulls the
- * `books` table via ReadestStorageCoordinator (lazy-refresh on 401), shows
- * a flat paged list, and on Confirm performs the two-step
- * list-files-by-hash → sign-presigned-URL → GET-bytes flow before
- * dropping the EPUB into the SD root with the same `"/<title> - <author>.epub"`
- * naming convention OPDS uses.
- */
 class ReadestLibraryActivity final : public Activity {
  public:
   enum class State { CHECK_WIFI, WIFI_SELECTION, LOADING, BROWSING, DOWNLOADING, ERROR };

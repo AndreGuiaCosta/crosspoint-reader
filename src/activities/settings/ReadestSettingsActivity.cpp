@@ -80,18 +80,12 @@ void ReadestSettingsActivity::handleSelection() {
                              }
                            });
   } else if (selectedIndex == ITEM_SIGN_IN) {
-    if (READEST_STORE.getUserEmail().empty()) return;  // No-op without email; user sees status.
+    if (READEST_STORE.getUserEmail().empty()) return;
     startActivityForResult(std::make_unique<ReadestAuthActivity>(renderer, mappedInput),
                            [this](const ActivityResult&) { requestUpdate(); });
   } else if (selectedIndex == ITEM_SIGN_OUT) {
     if (!READEST_STORE.hasCredentials()) return;
-    // Best-effort server-side revoke + always-clear-locally is the contract
-    // documented on ReadestAuthClient::signOut.
     ReadestAuthClient::signOut();
-    // Wipe the cached catalog so a different user signing in next sees their
-    // own library, not the previous account's. Downloaded EPUBs and the
-    // hash→path map deliberately stay on SD — the user can keep reading
-    // local copies regardless of session state.
     READEST_CATALOG.clear();
     requestUpdate();
   } else if (selectedIndex == ITEM_SYNC_API_URL) {
@@ -147,11 +141,10 @@ void ReadestSettingsActivity::render(RenderLock&&) {
             return email.empty() ? std::string(tr(STR_NOT_SET)) : email;
           }
           case ITEM_SIGN_IN:
-            // Show readiness rather than a value.
             if (READEST_STORE.getUserEmail().empty()) {
               return std::string("[") + tr(STR_SET_CREDENTIALS_FIRST) + "]";
             }
-            return READEST_STORE.hasCredentials() ? "" : "";
+            return "";
           case ITEM_SIGN_OUT:
             return READEST_STORE.hasCredentials() ? "" : std::string(tr(STR_NOT_SET));
           case ITEM_SYNC_API_URL: {

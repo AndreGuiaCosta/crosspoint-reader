@@ -270,12 +270,9 @@ bool JsonSettingsIO::loadKOReader(KOReaderCredentialStore& store, const char* js
 
 bool JsonSettingsIO::saveReadest(const ReadestAccountStore& store, const char* path) {
   JsonDocument doc;
-  // Endpoint overrides — empty fields fall back to hosted defaults at read time.
   doc["syncApiBase"] = store.getSyncApiBaseRaw();
   doc["supabaseUrl"] = store.getSupabaseUrlRaw();
   doc["supabaseAnonKey"] = store.getSupabaseAnonKeyRaw();
-  // Identity + session. Tokens stored as plain JSON per V1 decision: they
-  // expire hourly and only protect one user's reading progress on this SD.
   doc["userEmail"] = store.getUserEmail();
   doc["userId"] = store.getUserId();
   doc["accessToken"] = store.getAccessToken();
@@ -363,8 +360,6 @@ bool JsonSettingsIO::saveReadestCatalog(const ReadestBookCatalog& cat, const cha
     obj["progressTotal"] = b.progressTotal;
     obj["uploadedAtMs"] = b.uploadedAtMs;
     obj["updatedAtMs"] = b.updatedAtMs;
-    // `deleted` is intentionally omitted — soft-deleted rows are dropped at
-    // merge time and never reach disk.
   }
   String json;
   serializeJson(doc, json);

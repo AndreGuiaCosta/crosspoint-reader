@@ -6,20 +6,15 @@
 #include <ReadestTlsConfig.h>
 #include <WiFiClientSecure.h>
 
-#include <cctype>
 #include <cstdio>
 
 #include "ReadestAccountStore.h"
+#include "ReadestTimeUtils.h"
 
 namespace {
-// Per handoff §4.3 — match the koplugin's budgets. Same TLS handshake +
-// JSON parse + DB write on the server, so the wider sync budget is
-// reused rather than re-derived.
 constexpr int SYNC_CONNECT_TIMEOUT = 5000;
 constexpr int SYNC_READ_TIMEOUT = 10000;
 
-// See lib/TestHooks/ReadestTlsConfig.h — production path installs the CA
-// bundle; the simulator override calls setInsecure().
 void configureTls(WiFiClientSecure& client) { ReadestTls::configure(client); }
 
 void addAuthHeaders(HTTPClient& http, const std::string& accessToken) {
@@ -46,50 +41,11 @@ void extractErrorMessage(const String& body, std::string* errMsg) {
   if (!msg.empty()) *errMsg = std::move(msg);
 }
 
-// Parse `"[17,342]"` (with optional whitespace) into two ints. Tolerates
-// the variations the server may emit; gracefully returns false on
-// anything else.
 bool parseProgressString(const std::string& s, int* cur, int* total) {
   if (s.empty()) return false;
   return std::sscanf(s.c_str(), " [ %d , %d ]", cur, total) == 2;
 }
 
-// ISO-8601 → unix ms. Accepts `YYYY-MM-DDTHH:MM:SS[.fff]Z` and trailing
-// timezone variants by treating anything after the seconds (or fractional
-// seconds) as UTC. Uses Howard Hinnant's days_from_civil so we don't
-// depend on platform timegm() — newlib on ESP-IDF has it, glibc has it,
-// but neither guarantee is worth a future debugging session.
-int64_t parseIso8601ToMs(const std::string& iso) {
-  int Y = 0, M = 0, D = 0, h = 0, m = 0, s = 0;
-  if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &Y, &M, &D, &h, &m, &s) != 6) return 0;
-  int ms = 0;
-  const size_t dot = iso.find('.', 19);
-  if (dot != std::string::npos) {
-    int frac = 0, digits = 0;
-    for (size_t i = dot + 1; i < iso.size() && std::isdigit(static_cast<unsigned char>(iso[i])) && digits < 3;
-         ++i, ++digits) {
-      frac = frac * 10 + (iso[i] - '0');
-    }
-    while (digits < 3) {
-      frac *= 10;
-      ++digits;
-    }
-    ms = frac;
-  }
-  // days_from_civil — see https://howardhinnant.github.io/date_algorithms.html
-  Y -= M <= 2;
-  const int era = (Y >= 0 ? Y : Y - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(Y - era * 400);
-  const unsigned doy = (153u * (M > 2 ? M - 3 : M + 9) + 2u) / 5u + D - 1;
-  const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
-  const int64_t days = static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
-  return days * 86400000LL + static_cast<int64_t>(h) * 3600000LL + static_cast<int64_t>(m) * 60000LL +
-         static_cast<int64_t>(s) * 1000LL + ms;
-}
-
-// Populate a BookConfig from one snake_case row of the GET response.
-// `progress` is the stringified-array quirk (§13.5); `updated_at` is the
-// ISO-string quirk (§13.7).
 void rowToConfig(JsonObjectConst row, ReadestSyncClient::BookConfig& out) {
   out.bookHash = row["book_hash"] | std::string("");
   out.metaHash = row["meta_hash"] | std::string("");
@@ -100,7 +56,7 @@ void rowToConfig(JsonObjectConst row, ReadestSyncClient::BookConfig& out) {
   parseProgressString(progressStr, &out.progressCurrent, &out.progressTotal);
 
   const std::string updatedAt = row["updated_at"] | std::string("");
-  out.updatedAtMs = parseIso8601ToMs(updatedAt);
+  out.updatedAtMs = ReadestTimeUtils::parseIso8601ToMs(updatedAt);
 
   const std::string deletedAt = row["deleted_at"] | std::string("");
   out.deleted = !deletedAt.empty();
@@ -119,8 +75,6 @@ ReadestSyncClient::Error ReadestSyncClient::pullConfig(int64_t sinceMs, const st
     return NO_AUTH;
   }
 
-  // Hashes are 32-hex; `since` is numeric. Nothing here needs URL-encoding,
-  // and skipping a generic encoder keeps the firmware binary small.
   char sinceBuf[32];
   std::snprintf(sinceBuf, sizeof(sinceBuf), "%lld", static_cast<long long>(sinceMs));
   std::string url = READEST_STORE.getSyncApiBase() + "/sync?since=" + sinceBuf + "&type=configs&book=" + bookHash +
@@ -153,11 +107,10 @@ ReadestSyncClient::Error ReadestSyncClient::pullConfig(int64_t sinceMs, const st
     return JSON_ERROR;
   }
 
-  // Per §4.1 the server's filter unions book and meta_hash matches, so the
-  // result may include rows for other books with the same metadata. Pick
-  // the row whose book_hash matches ours; ignore the rest. Also track the
-  // max updated_at across *all* returned rows so the cursor advances even
-  // when the matching row is older than a sibling.
+  // Server filter unions book and meta_hash matches, so the response may
+  // include same-meta rows for other books — pick the matching book_hash,
+  // and track maxUpdatedAtMs across *all* rows so the cursor advances even
+  // when the match is older than a sibling row.
   JsonArrayConst configs = doc["configs"];
   for (JsonObjectConst row : configs) {
     BookConfig parsed;
@@ -184,10 +137,6 @@ ReadestSyncClient::Error ReadestSyncClient::pushConfig(const BookConfig& cfg, Bo
   const std::string url = READEST_STORE.getSyncApiBase() + "/sync";
   LOG_DBG("RSYNC", "push: %s", url.c_str());
 
-  // Build { configs: [{ ... }] }. Field names are camelCase per §6.1 —
-  // server's transform layer maps them to snake_case columns. `progress`
-  // goes out as an array (§13.5); the response will contain the
-  // stringified form.
   JsonDocument req;
   JsonArray configs = req["configs"].to<JsonArray>();
   JsonObject c = configs.add<JsonObject>();
@@ -230,8 +179,6 @@ ReadestSyncClient::Error ReadestSyncClient::pushConfig(const BookConfig& cfg, Bo
     return JSON_ERROR;
   }
 
-  // The server returns `{configs: [authoritative_row]}`. Match by hash —
-  // belt and suspenders since we only sent one — and adopt the row.
   if (outAuthoritative) {
     for (JsonObjectConst row : doc["configs"].as<JsonArrayConst>()) {
       BookConfig parsed;

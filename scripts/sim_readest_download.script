@@ -1,15 +1,10 @@
-# End-to-end Readest Library download. Walks Home → Readest Library →
-# Confirm on the top row → waits for the two-step (list+sign) + HTTP GET
-# pipeline to finish → screenshots the resulting "Downloaded" suffix.
-# Assumes valid Readest credentials are already persisted and the library
-# JSON has been wiped so the top row is undeleted/un-marked.
+# End-to-end Readest Library download. Assumes credentials are persisted.
 log download: start
 expect_timeout 30000
 expect Entering activity: Home
 wait 500
 
-# Lyra theme: 1 recent book + Browse Files + Recent Books + Readest Library
-# means 3 Downs from recent[0] → Readest Library.
+# Lyra theme: recent[0] → 3 Downs → Readest Library.
 tap down
 tap down
 tap down
@@ -17,24 +12,16 @@ wait 200
 
 tap confirm
 expect Entering activity: ReadestLibrary
-# Books pull (~400 ms). The "library ready" debug line is the canonical
-# end-of-load sentinel — emitted after fetchBooks finishes the delta merge
-# regardless of pull success / cache fallback.
 expect_timeout 60000
 expect library ready
 wait 500
 screenshot /screenshots/dl-01-list-cold.bmp
 
-# Top row is "The Apothecary Diaries: Volume 15" (~25 MB EPUB on hosted
-# Readest). Confirm to download it. The activity goes:
-#   list → sign → HttpDownloader::downloadToFile → BROWSING + recordDownload.
 tap confirm
 expect Entering activity: ReadestLibrary
 wait 200
 screenshot /screenshots/dl-02-downloading.bmp
 
-# Wait for the download to land. RLS log line on success is the canonical
-# end-of-flow marker. Budget is generous because the EPUB is multi-MB.
 expect_timeout 180000
 expect Recorded download
 wait 500
