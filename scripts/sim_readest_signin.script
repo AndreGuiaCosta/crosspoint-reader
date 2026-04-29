@@ -34,7 +34,7 @@ wait 500
 screenshot /screenshots/signin-01-settings.bmp
 
 # Step 1: Sign Out to clear existing session — verifies the Sign Out path.
-# Items: Email, Sign In, Sign Out, Sync API URL, Supabase URL.
+# Items: Email, Sign In, Sign Out, Sync API URL, Supabase URL, Last Sync, Last Error.
 # Email is highlighted on entry; Down twice to reach Sign Out.
 tap down
 tap down

@@ -280,6 +280,8 @@ bool JsonSettingsIO::saveReadest(const ReadestAccountStore& store, const char* p
   doc["expiresAt"] = store.getExpiresAt();
   doc["expiresIn"] = store.getExpiresIn();
   doc["lastConfigsSyncAtMs"] = store.getLastConfigsSyncAtMs();
+  doc["lastSyncAtMs"] = store.getLastSyncAtMs();
+  doc["lastSyncError"] = store.getLastSyncError();
 
   String json;
   serializeJson(doc, json);
@@ -304,6 +306,8 @@ bool JsonSettingsIO::loadReadest(ReadestAccountStore& store, const char* json) {
   store.expiresAt = doc["expiresAt"] | static_cast<int64_t>(0);
   store.expiresIn = doc["expiresIn"] | static_cast<int64_t>(0);
   store.lastConfigsSyncAtMs = doc["lastConfigsSyncAtMs"] | static_cast<int64_t>(0);
+  store.lastSyncAtMs = doc["lastSyncAtMs"] | static_cast<int64_t>(0);
+  store.lastSyncError = doc["lastSyncError"] | std::string("");
 
   LOG_DBG("RAS", "Loaded Readest account: user=%s hasToken=%d", store.userEmail.c_str(), !store.accessToken.empty());
   return true;

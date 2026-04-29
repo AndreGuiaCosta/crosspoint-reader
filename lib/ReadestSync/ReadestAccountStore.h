@@ -45,6 +45,13 @@ class ReadestAccountStore {
   // Last `since` cursor used for /api/sync pulls. Unix milliseconds.
   int64_t lastConfigsSyncAtMs = 0;
 
+  // Status of the most recent progress sync attempt (handoff §17). Updated
+  // by ReadestSyncCoordinator on every pull/push. lastSyncAtMs is set to
+  // wall-clock-ms on success and left untouched on failure; lastSyncError
+  // holds the most recent error message and is cleared on success.
+  int64_t lastSyncAtMs = 0;
+  std::string lastSyncError;
+
   ReadestAccountStore() = default;
 
   friend bool JsonSettingsIO::saveReadest(const ReadestAccountStore&, const char*);
@@ -98,6 +105,14 @@ class ReadestAccountStore {
 
   int64_t getLastConfigsSyncAtMs() const { return lastConfigsSyncAtMs; }
   void setLastConfigsSyncAtMs(int64_t ms);
+
+  int64_t getLastSyncAtMs() const { return lastSyncAtMs; }
+  const std::string& getLastSyncError() const { return lastSyncError; }
+  // Record the outcome of a sync attempt. On success: stamp lastSyncAtMs
+  // with wall-clock-ms and clear lastSyncError. On failure: leave the
+  // timestamp alone (so the user still sees when it last worked) and
+  // record errMsg. Persists.
+  void recordSyncResult(bool ok, const std::string& errMsg);
 
   // Predicates.
   // True iff a non-empty access token is present. Does not check expiry —

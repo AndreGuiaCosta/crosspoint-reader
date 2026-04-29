@@ -6,6 +6,9 @@
 #include <ReadestAuthClient.h>
 #include <ReadestBookCatalog.h>
 
+#include <cstdio>
+#include <ctime>
+
 #include "MappedInputManager.h"
 #include "ReadestAuthActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
@@ -19,8 +22,12 @@ enum MenuItem {
   ITEM_SIGN_OUT,
   ITEM_SYNC_API_URL,
   ITEM_SUPABASE_URL,
+  ITEM_LAST_SYNC,
+  ITEM_LAST_ERROR,
   MENU_ITEM_COUNT,
 };
+
+bool isReadOnly(int index) { return index == ITEM_LAST_SYNC || index == ITEM_LAST_ERROR; }
 
 const char* itemLabel(int index) {
   switch (index) {
@@ -34,9 +41,35 @@ const char* itemLabel(int index) {
       return tr(STR_READEST_SYNC_API_URL);
     case ITEM_SUPABASE_URL:
       return tr(STR_READEST_SUPABASE_URL);
+    case ITEM_LAST_SYNC:
+      return tr(STR_READEST_LAST_SYNC);
+    case ITEM_LAST_ERROR:
+      return tr(STR_READEST_LAST_ERROR);
     default:
       return "";
   }
+}
+
+// Render a unix-ms timestamp as a coarse relative time. Falls back to "Never"
+// when the stamp is zero or in the future relative to a sane epoch (clock
+// skew before NTP sync). Format mirrors typical mobile sync UIs: "Just now",
+// "5m ago", "2h ago", "3d ago".
+std::string formatRelativeMs(int64_t ms) {
+  if (ms <= 0) return std::string(tr(STR_NEVER));
+  const int64_t nowMs = static_cast<int64_t>(std::time(nullptr)) * 1000LL;
+  const int64_t deltaSec = (nowMs - ms) / 1000LL;
+  if (deltaSec < 0) return std::string(tr(STR_NEVER));
+  char buf[32];
+  if (deltaSec < 60) {
+    return "Just now";
+  } else if (deltaSec < 3600) {
+    std::snprintf(buf, sizeof(buf), "%lldm ago", static_cast<long long>(deltaSec / 60));
+  } else if (deltaSec < 86400) {
+    std::snprintf(buf, sizeof(buf), "%lldh ago", static_cast<long long>(deltaSec / 3600));
+  } else {
+    std::snprintf(buf, sizeof(buf), "%lldd ago", static_cast<long long>(deltaSec / 86400));
+  }
+  return buf;
 }
 }  // namespace
 
@@ -70,6 +103,7 @@ void ReadestSettingsActivity::loop() {
 }
 
 void ReadestSettingsActivity::handleSelection() {
+  if (isReadOnly(selectedIndex)) return;
   if (selectedIndex == ITEM_EMAIL) {
     startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_READEST_EMAIL),
                                                                    READEST_STORE.getUserEmail(), 128, InputType::Text),
@@ -154,6 +188,12 @@ void ReadestSettingsActivity::render(RenderLock&&) {
           case ITEM_SUPABASE_URL: {
             const auto url = READEST_STORE.getSupabaseUrlRaw();
             return url.empty() ? std::string(tr(STR_DEFAULT_VALUE)) : url;
+          }
+          case ITEM_LAST_SYNC:
+            return formatRelativeMs(READEST_STORE.getLastSyncAtMs());
+          case ITEM_LAST_ERROR: {
+            const auto& err = READEST_STORE.getLastSyncError();
+            return err.empty() ? "" : err;
           }
           default:
             return "";

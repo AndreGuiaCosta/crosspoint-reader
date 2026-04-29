@@ -147,6 +147,16 @@ void ReadestAccountStore::setLastConfigsSyncAtMs(int64_t ms) {
   saveToFile();
 }
 
+void ReadestAccountStore::recordSyncResult(bool ok, const std::string& errMsg) {
+  if (ok) {
+    lastSyncAtMs = nowUnixSeconds() * 1000LL;
+    lastSyncError.clear();
+  } else {
+    lastSyncError = errMsg;
+  }
+  saveToFile();
+}
+
 bool ReadestAccountStore::hasCredentials() const { return !accessToken.empty(); }
 
 bool ReadestAccountStore::needsLogin() const {
