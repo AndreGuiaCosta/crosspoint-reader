@@ -12,10 +12,12 @@
  *
  * Flow:
  *   1. Read email from READEST_STORE — must be set in settings first.
- *   2. Prompt for password via KeyboardEntryActivity (never persisted).
+ *   2. If a password is saved on the store (set via the settings UI, web or
+ *      device), use it. Otherwise prompt via KeyboardEntryActivity.
  *   3. Bring up WiFi if needed.
  *   4. Call ReadestAuthClient::signIn(email, password). Tokens persist on
- *      success; password is dropped.
+ *      success; the in-memory copy of the password is scrubbed regardless
+ *      of outcome (the persisted copy in the store is left intact).
  *   5. Show outcome and exit on user dismiss.
  */
 class ReadestAuthActivity final : public Activity {

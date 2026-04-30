@@ -275,6 +275,7 @@ bool JsonSettingsIO::saveReadest(const ReadestAccountStore& store, const char* p
   doc["supabaseAnonKey"] = store.getSupabaseAnonKeyRaw();
   doc["userEmail"] = store.getUserEmail();
   doc["userId"] = store.getUserId();
+  doc["password_obf"] = obfuscation::obfuscateToBase64(store.password);
   doc["accessToken"] = store.getAccessToken();
   doc["refreshToken"] = store.getRefreshToken();
   doc["expiresAt"] = store.getExpiresAt();
@@ -301,6 +302,11 @@ bool JsonSettingsIO::loadReadest(ReadestAccountStore& store, const char* json) {
   store.supabaseAnonKey = doc["supabaseAnonKey"] | std::string("");
   store.userEmail = doc["userEmail"] | std::string("");
   store.userId = doc["userId"] | std::string("");
+  {
+    bool ok = false;
+    store.password = obfuscation::deobfuscateFromBase64(doc["password_obf"] | "", &ok);
+    if (!ok) store.password.clear();
+  }
   store.accessToken = doc["accessToken"] | std::string("");
   store.refreshToken = doc["refreshToken"] | std::string("");
   store.expiresAt = doc["expiresAt"] | static_cast<int64_t>(0);

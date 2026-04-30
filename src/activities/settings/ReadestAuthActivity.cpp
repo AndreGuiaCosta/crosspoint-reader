@@ -101,6 +101,15 @@ void ReadestAuthActivity::onEnter() {
     return;
   }
 
+  // A password set via the settings UI lets us skip the keyboard prompt
+  // and go straight to WiFi + sign-in.
+  const std::string savedPassword = READEST_STORE.getPassword();
+  if (!savedPassword.empty()) {
+    state = PASSWORD_PROMPT;
+    onPasswordEntered(savedPassword);
+    return;
+  }
+
   state = PASSWORD_PROMPT;
   launchPasswordPrompt();
 }

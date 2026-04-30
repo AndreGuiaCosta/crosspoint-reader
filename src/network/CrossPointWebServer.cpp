@@ -1149,7 +1149,12 @@ void CrossPointWebServer::handleGetSettings() const {
       }
       case SettingType::STRING: {
         doc["type"] = "string";
-        if (s.stringGetter) {
+        if (s.writeOnly) {
+          // Write-only fields (passwords) are never echoed back. The form
+          // renders an empty input; an empty submit is treated as a no-op
+          // by the POST handler, so the stored value is preserved.
+          doc["value"] = "";
+        } else if (s.stringGetter) {
           doc["value"] = s.stringGetter();
         } else if (s.stringMaxLen > 0) {
           doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset;
@@ -1233,6 +1238,9 @@ void CrossPointWebServer::handlePostSettings() {
       }
       case SettingType::STRING: {
         const std::string val = doc[s.key].as<std::string>();
+        // Write-only fields submit empty when the user didn't re-enter the
+        // value; treat that as "no change" rather than blanking the store.
+        if (s.writeOnly && val.empty()) break;
         if (s.stringSetter) {
           s.stringSetter(val);
         } else if (s.stringMaxLen > 0) {

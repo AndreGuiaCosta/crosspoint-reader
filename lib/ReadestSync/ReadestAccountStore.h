@@ -36,6 +36,13 @@ class ReadestAccountStore {
   std::string userEmail;
   std::string userId;
 
+  // The user's Supabase account password. Persisted (XOR-obfuscated against
+  // the device MAC) so the on-device sign-in flow can skip the keyboard
+  // prompt and so token refresh has a fallback if the refresh token is ever
+  // invalidated server-side. Only ever set by the user (settings UI) — never
+  // returned by /api/settings GET.
+  std::string password;
+
   // Session tokens.
   std::string accessToken;
   std::string refreshToken;
@@ -95,6 +102,12 @@ class ReadestAccountStore {
   // sign-in activity can use it without prompting twice. Persists to disk.
   // Token state is left untouched.
   void setUserEmail(const std::string& email);
+
+  // Stored Supabase account password. Set via the settings UI (web or device).
+  // Persisted XOR-obfuscated, never returned by GET /api/settings. Empty
+  // string means "no password saved — prompt on sign-in".
+  const std::string& getPassword() const { return password; }
+  void setPassword(const std::string& pw);
 
   // Replace the active session with a fresh token bundle (post sign-in or
   // refresh). Persists to disk.

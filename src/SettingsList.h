@@ -6,6 +6,7 @@
 
 #include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
+#include "ReadestAccountStore.h"
 #include "activities/settings/SettingsActivity.h"
 
 // Shared settings list used by both the device settings UI and the web settings API.
@@ -111,6 +112,36 @@ inline const std::vector<SettingInfo>& getSettingsList() {
             KOREADER_STORE.saveToFile();
           },
           "koMatchMethod", StrId::STR_KOREADER_SYNC),
+      // --- Readest Sync (web-only, uses ReadestAccountStore) ---
+      // Email + password + endpoints are pre-set here; the actual sign-in
+      // (which needs WiFi + NTP + a Supabase round-trip) still runs on-device
+      // via ReadestAuthActivity. With a saved password the device skips the
+      // keyboard prompt and signs in straight through.
+      //
+      // The password field is write-only — never returned by GET, and an
+      // empty POST is a no-op so leaving it blank on Save preserves the
+      // stored value. Persisted XOR-obfuscated against the device MAC.
+      SettingInfo::DynamicString(
+          StrId::STR_READEST_EMAIL, [] { return READEST_STORE.getUserEmail(); },
+          [](const std::string& v) { READEST_STORE.setUserEmail(v); }, "readestEmail", StrId::STR_READEST_SYNC),
+      SettingInfo::DynamicString(
+          StrId::STR_READEST_PASSWORD, [] { return std::string(); },
+          [](const std::string& v) { READEST_STORE.setPassword(v); }, "readestPassword", StrId::STR_READEST_SYNC)
+          .withWriteOnly(),
+      SettingInfo::DynamicString(
+          StrId::STR_READEST_SYNC_API_URL, [] { return READEST_STORE.getSyncApiBaseRaw(); },
+          [](const std::string& v) {
+            READEST_STORE.setSyncApiBase(v);
+            READEST_STORE.saveToFile();
+          },
+          "readestSyncApiUrl", StrId::STR_READEST_SYNC),
+      SettingInfo::DynamicString(
+          StrId::STR_READEST_SUPABASE_URL, [] { return READEST_STORE.getSupabaseUrlRaw(); },
+          [](const std::string& v) {
+            READEST_STORE.setSupabaseUrl(v);
+            READEST_STORE.saveToFile();
+          },
+          "readestSupabaseUrl", StrId::STR_READEST_SYNC),
       // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
       SettingInfo::Toggle(StrId::STR_CHAPTER_PAGE_COUNT, &CrossPointSettings::statusBarChapterPageCount,
                           "statusBarChapterPageCount", StrId::STR_CUSTOMISE_STATUS_BAR),

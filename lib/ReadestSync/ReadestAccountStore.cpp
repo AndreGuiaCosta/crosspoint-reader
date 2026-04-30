@@ -110,6 +110,13 @@ void ReadestAccountStore::setUserEmail(const std::string& email) {
   saveToFile();
 }
 
+void ReadestAccountStore::setPassword(const std::string& pw) {
+  if (password == pw) return;
+  password = pw;
+  LOG_DBG("RAS", "Password %s", pw.empty() ? "cleared" : "set");
+  saveToFile();
+}
+
 void ReadestAccountStore::setSession(const std::string& email, const std::string& userId,
                                      const std::string& accessToken, const std::string& refreshToken, int64_t expiresAt,
                                      int64_t expiresIn) {
