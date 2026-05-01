@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 #include <NtpSync.h>
 #include <ReadestAccountStore.h>
 #include <ReadestAuthClient.h>
@@ -41,6 +42,15 @@ void ReadestAuthActivity::onPasswordEntered(const std::string& password) {
     onWifiSelectionComplete(true);
     return;
   }
+
+  // Pre-init the radio in STA mode before handing off to WifiSelectionActivity.
+  // Mirrors the "Join Network" flow in CrossPointWebServerActivity — without
+  // this, the child activity has to cold-init the peripheral from whatever
+  // state the previous activity left it in (often WIFI_OFF, since our own
+  // onExit kills WiFi), which the ESP32-C3 doesn't always recover from on the
+  // first scan/connect.
+  LOG_DBG("READEST_AUTH", "Turning on WiFi (STA mode)...");
+  WiFi.mode(WIFI_STA);
 
   {
     RenderLock lock(*this);

@@ -18,6 +18,7 @@
 namespace {
 enum MenuItem {
   ITEM_EMAIL = 0,
+  ITEM_PASSWORD,
   ITEM_SIGN_IN,
   ITEM_SIGN_OUT,
   ITEM_SYNC_API_URL,
@@ -33,6 +34,8 @@ const char* itemLabel(int index) {
   switch (index) {
     case ITEM_EMAIL:
       return tr(STR_READEST_EMAIL);
+    case ITEM_PASSWORD:
+      return tr(STR_READEST_PASSWORD);
     case ITEM_SIGN_IN:
       return tr(STR_READEST_SIGN_IN);
     case ITEM_SIGN_OUT:
@@ -113,6 +116,18 @@ void ReadestSettingsActivity::handleSelection() {
                                READEST_STORE.setUserEmail(kb.text);
                              }
                            });
+  } else if (selectedIndex == ITEM_PASSWORD) {
+    // Password is captured masked and persisted XOR-obfuscated by the store.
+    // Prefill blank so the user can't accidentally see/leak the existing
+    // value; submitting blank is treated as "no change" upstream.
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_READEST_PASSWORD), "",
+                                                                   128, InputType::Password),
+                           [this](const ActivityResult& result) {
+                             if (!result.isCancelled) {
+                               const auto& kb = std::get<KeyboardResult>(result.data);
+                               if (!kb.text.empty()) READEST_STORE.setPassword(kb.text);
+                             }
+                           });
   } else if (selectedIndex == ITEM_SIGN_IN) {
     if (READEST_STORE.getUserEmail().empty()) return;
     startActivityForResult(std::make_unique<ReadestAuthActivity>(renderer, mappedInput),
@@ -174,6 +189,9 @@ void ReadestSettingsActivity::render(RenderLock&&) {
             const auto email = READEST_STORE.getUserEmail();
             return email.empty() ? std::string(tr(STR_NOT_SET)) : email;
           }
+          case ITEM_PASSWORD:
+            // Don't echo the value — show set/unset only.
+            return READEST_STORE.getPassword().empty() ? std::string(tr(STR_NOT_SET)) : std::string("********");
           case ITEM_SIGN_IN:
             if (READEST_STORE.getUserEmail().empty()) {
               return std::string("[") + tr(STR_SET_CREDENTIALS_FIRST) + "]";
