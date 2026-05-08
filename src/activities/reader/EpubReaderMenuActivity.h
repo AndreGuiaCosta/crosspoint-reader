@@ -20,8 +20,9 @@ class EpubReaderMenuActivity final : public Activity {
     SCREENSHOT,
     DISPLAY_QR,
     GO_HOME,
-    SYNC,
-    DELETE_CACHE
+    SYNC_KOREADER,
+    DELETE_CACHE,
+    SYNC_READEST,
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
@@ -38,6 +39,8 @@ class EpubReaderMenuActivity final : public Activity {
   struct MenuItem {
     MenuAction action;
     StrId labelId;
+    // If non-empty, used in place of I18N.get(labelId).
+    std::string overrideLabel;
   };
 
   static std::vector<MenuItem> buildMenuItems(bool hasFootnotes);

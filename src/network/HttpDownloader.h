@@ -4,6 +4,9 @@
 #include <functional>
 #include <string>
 
+// Forward decl: simulator build doesn't auto-include Arduino headers.
+class Stream;
+
 /**
  * HTTP client utility for fetching content and downloading files.
  * Wraps NetworkClientSecure and HTTPClient for HTTPS requests.

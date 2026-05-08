@@ -90,7 +90,7 @@ const char* OpdsParser::findAttribute(const XML_Char** atts, const char* name) {
 void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
   auto* self = static_cast<OpdsParser*>(userData);
 
-  if (strcmp(name, "link") == 0 || strstr(name, ":link") != nullptr) {
+  if (tagEquals(name, "link")) {
     const char* href = findAttribute(atts, "href");
     if (href) {
       const char* rel = findAttribute(atts, "rel");
@@ -122,7 +122,7 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
     }
   }
 
-  if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
+  if (tagEquals(name, "entry")) {
     self->inEntry = true;
     self->currentEntry = OpdsEntry{};
     return;
@@ -130,15 +130,15 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
 
   if (!self->inEntry) return;
 
-  if (strcmp(name, "title") == 0 || strstr(name, ":title") != nullptr) {
+  if (tagEquals(name, "title")) {
     self->inTitle = true;
     self->currentText.clear();
-  } else if (strcmp(name, "author") == 0 || strstr(name, ":author") != nullptr) {
+  } else if (tagEquals(name, "author")) {
     self->inAuthor = true;
-  } else if (self->inAuthor && (strcmp(name, "name") == 0 || strstr(name, ":name") != nullptr)) {
+  } else if (self->inAuthor && tagEquals(name, "name")) {
     self->inAuthorName = true;
     self->currentText.clear();
-  } else if (strcmp(name, "id") == 0 || strstr(name, ":id") != nullptr) {
+  } else if (tagEquals(name, "id")) {
     self->inId = true;
     self->currentText.clear();
   }
@@ -147,21 +147,21 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
 void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<OpdsParser*>(userData);
 
-  if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
+  if (tagEquals(name, "entry")) {
     if (!self->currentEntry.title.empty() && !self->currentEntry.href.empty()) {
       self->entries.push_back(self->currentEntry);
     }
     self->inEntry = false;
   } else if (self->inEntry) {
-    if (strcmp(name, "title") == 0 || strstr(name, ":title") != nullptr) {
+    if (tagEquals(name, "title")) {
       if (self->inTitle) self->currentEntry.title = self->currentText;
       self->inTitle = false;
-    } else if (strcmp(name, "author") == 0 || strstr(name, ":author") != nullptr) {
+    } else if (tagEquals(name, "author")) {
       self->inAuthor = false;
-    } else if (self->inAuthorName && (strcmp(name, "name") == 0 || strstr(name, ":name") != nullptr)) {
+    } else if (self->inAuthorName && tagEquals(name, "name")) {
       self->currentEntry.author = self->currentText;
       self->inAuthorName = false;
-    } else if (strcmp(name, "id") == 0 || strstr(name, ":id") != nullptr) {
+    } else if (tagEquals(name, "id")) {
       if (self->inId) self->currentEntry.id = self->currentText;
       self->inId = false;
     }

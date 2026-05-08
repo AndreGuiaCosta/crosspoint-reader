@@ -6,6 +6,7 @@
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
+#include "browser/ReadestLibraryActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
@@ -188,6 +189,10 @@ void ActivityManager::goToBrowser() {
   } else {
     replaceActivity(std::make_unique<OpdsServerListActivity>(renderer, mappedInput, true));
   }
+}
+
+void ActivityManager::goToReadestLibrary() {
+  replaceActivity(std::make_unique<ReadestLibraryActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToReader(std::string path) {

@@ -21,6 +21,9 @@
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
+#include "ReadestAccountStore.h"
+#include "ReadestBookCatalog.h"
+#include "ReadestLibraryStore.h"
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
@@ -263,6 +266,9 @@ void setup() {
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
+  READEST_STORE.loadFromFile();
+  READEST_LIB_STORE.loadFromFile();
+  READEST_CATALOG.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 

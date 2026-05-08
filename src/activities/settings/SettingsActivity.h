@@ -22,10 +22,13 @@ enum class SettingAction {
   CheckForUpdates,
   SdFirmwareUpdate,
   Language,
+  ReadestSync,
 };
 
 struct SettingInfo {
   StrId nameId;
+  // If non-empty, displayed in place of I18N.get(nameId).
+  std::string overrideLabel;
   SettingType type;
   uint8_t CrossPointSettings::* valuePtr = nullptr;
   std::vector<StrId> enumValues;
@@ -41,6 +44,7 @@ struct SettingInfo {
   const char* key = nullptr;             // JSON API key (nullptr for ACTION types)
   StrId category = StrId::STR_NONE_OPT;  // Category for web UI grouping
   bool obfuscated = false;               // Save/load via base64 obfuscation (passwords)
+  bool writeOnly = false;                // Never echoed in GET; empty values in POST are skipped (passwords)
 
   // Direct char[] string fields (for settings stored in CrossPointSettings)
   size_t stringOffset = 0;
@@ -54,6 +58,11 @@ struct SettingInfo {
 
   SettingInfo& withObfuscated() {
     obfuscated = true;
+    return *this;
+  }
+
+  SettingInfo& withWriteOnly() {
+    writeOnly = true;
     return *this;
   }
 
@@ -80,9 +89,10 @@ struct SettingInfo {
     return s;
   }
 
-  static SettingInfo Action(StrId nameId, SettingAction action) {
+  static SettingInfo Action(StrId nameId, SettingAction action, std::string overrideLabel = "") {
     SettingInfo s;
     s.nameId = nameId;
+    s.overrideLabel = std::move(overrideLabel);
     s.type = SettingType::ACTION;
     s.action = action;
     return s;
