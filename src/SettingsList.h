@@ -230,6 +230,15 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
               READEST_STORE.saveToFile();
             },
             "readestSupabaseUrl", StrId::STR_READEST_SYNC),
+        // Anon key override for self-hosters. Empty = ship the hosted-instance
+        // default. Web-admin-only — too long to enter on-device comfortably.
+        SettingInfo::DynamicString(
+            StrId::STR_READEST_SUPABASE_ANON_KEY, [] { return READEST_STORE.getSupabaseAnonKeyRaw(); },
+            [](const std::string& v) {
+              READEST_STORE.setSupabaseAnonKey(v);
+              READEST_STORE.saveToFile();
+            },
+            "readestSupabaseAnonKey", StrId::STR_READEST_SYNC),
         // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
         SettingInfo::Toggle(StrId::STR_CHAPTER_PAGE_COUNT, &CrossPointSettings::statusBarChapterPageCount,
                             "statusBarChapterPageCount", StrId::STR_CUSTOMISE_STATUS_BAR),

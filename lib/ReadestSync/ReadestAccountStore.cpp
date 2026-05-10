@@ -2,9 +2,7 @@
 
 #include <HalStorage.h>
 #include <Logging.h>
-#include <mbedtls/base64.h>
 
-#include <cstring>
 #include <ctime>
 
 #include "../../src/JsonSettingsIO.h"
@@ -14,36 +12,16 @@ ReadestAccountStore ReadestAccountStore::instance;
 namespace {
 constexpr char ACCOUNT_FILE_JSON[] = "/.crosspoint/readest.json";
 
-// Hosted-instance defaults; user overrides via settings.
+// Hosted Readest defaults; user overrides via settings (e.g. self-host).
 constexpr char DEFAULT_SYNC_API_BASE[] = "https://web.readest.com/api";
 constexpr char DEFAULT_SUPABASE_URL[] = "https://readest.supabase.co";
-
-// Public Supabase anon key, base64-encoded. NOT a secret — RLS-gated "anon"
-// JWT (role=anon) shipped with every Readest client.
-constexpr char DEFAULT_ANON_KEY_BASE64[] =
-    "ZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnBjM01pT2lKemRYQmhZbUZ6WlNJc0luSmxaaUk2SW5aaWMzbDRablZ6YW1weF"
-    "pIaHJhbkZzZVhOaklpd2ljbTlzWlNJNkltRnViMjRpTENKcFlYUWlPakUzTXpReE1qTTJOekVzSW1WNGNDSTZNakEwT1RZNU9UWTNNWDAuM1U1VXFh"
-    "b3VfMVNnclZlMWVvOXJBcGMwdUtqcWhwUWRVWGh2d1VIbVVmZw==";
-
-std::string decodeBase64(const std::string& input) {
-  if (input.empty()) return {};
-  size_t decodedLen = 0;
-  int ret = mbedtls_base64_decode(nullptr, 0, &decodedLen, reinterpret_cast<const unsigned char*>(input.c_str()),
-                                  input.size());
-  if (ret != 0 && ret != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
-    LOG_ERR("RAS", "base64 decode size query failed (ret=%d)", ret);
-    return {};
-  }
-  std::string out(decodedLen, '\0');
-  ret = mbedtls_base64_decode(reinterpret_cast<unsigned char*>(&out[0]), decodedLen, &decodedLen,
-                              reinterpret_cast<const unsigned char*>(input.c_str()), input.size());
-  if (ret != 0) {
-    LOG_ERR("RAS", "base64 decode failed (ret=%d)", ret);
-    return {};
-  }
-  out.resize(decodedLen);
-  return out;
-}
+// Public Supabase anon key — RLS-gated "anon" role JWT shipped with every
+// Readest client. Not a secret; a self-hoster overrides this with their own
+// project's anon key (Supabase dashboard → Project Settings → API).
+constexpr char DEFAULT_SUPABASE_ANON_KEY[] =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZic3l4ZnVzampxZHhranFseXNjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzQxMjM2NzEsImV4cCI6Mj"
+    "A0OTY5OTY3MX0.3U5Uqaou_1SgrVe1eo9rApc0uKjqhpQdUXhvwUHmUfg";
 
 int64_t nowUnixSeconds() { return static_cast<int64_t>(std::time(nullptr)); }
 }  // namespace
@@ -75,12 +53,7 @@ std::string ReadestAccountStore::getSupabaseUrl() const {
 }
 
 std::string ReadestAccountStore::getSupabaseAnonKey() const {
-  if (!supabaseAnonKey.empty()) {
-    return supabaseAnonKey;
-  }
-  // Decoded once per call — small (~300 B) and called rarely (once per
-  // auth request). Caching is not worth the static-init complexity.
-  return decodeBase64(DEFAULT_ANON_KEY_BASE64);
+  return supabaseAnonKey.empty() ? std::string(DEFAULT_SUPABASE_ANON_KEY) : supabaseAnonKey;
 }
 
 void ReadestAccountStore::setSyncApiBase(const std::string& url) {
