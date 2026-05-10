@@ -39,7 +39,6 @@ class ReadestSyncActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool preventAutoSleep() override { return state == CONNECTING || state == SYNCING || state == UPLOADING; }
-  bool isReaderActivity() const override { return true; }
 
  private:
   enum State {

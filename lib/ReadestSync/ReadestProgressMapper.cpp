@@ -4,29 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 
-#include "ChapterXPathResolver.h"
+#include "ProgressMapper.h"
 
 namespace {
-// Parse the integer between `prefix` and the next `]` in `s`. Returns -1
-// if the prefix isn't found or the contents aren't a positive decimal.
-// `last == true` searches from the end (used to grab the deepest `/p[N]`).
-int parseIndexAfter(const std::string& s, const char* prefix, bool last) {
-  const size_t prefixLen = std::strlen(prefix);
-  const size_t pos = last ? s.rfind(prefix) : s.find(prefix);
-  if (pos == std::string::npos) return -1;
-  const size_t numStart = pos + prefixLen;
-  const size_t numEnd = s.find(']', numStart);
-  if (numEnd == std::string::npos || numEnd == numStart) return -1;
-  int v = 0;
-  for (size_t i = numStart; i < numEnd; ++i) {
-    if (s[i] < '0' || s[i] > '9') return -1;
-    v = v * 10 + (s[i] - '0');
-  }
-  return v;
-}
-
 // Extract the second `/N` step from an `epubcfi(/A/B!/...)` string.
 // The leading step is `/6` for the spine collection; 0-based spine =
 // (step - 2) / 2. Returns -1 on any parse failure.
@@ -53,13 +34,12 @@ ReadestPosition ReadestProgressMapper::toReadest(const std::shared_ptr<Epub>& ep
   ReadestPosition r;
   if (!epub) return r;
 
-  const float intra =
-      (pos.totalPages > 0) ? static_cast<float>(pos.pageNumber) / static_cast<float>(pos.totalPages) : 0.0f;
-  if (pos.hasParagraphIndex && pos.paragraphIndex > 0) {
-    r.xpointer = ChapterXPathResolver::findXPathForParagraph(epub, pos.spineIndex, pos.paragraphIndex);
-  } else {
-    r.xpointer = ChapterXPathResolver::findXPathForProgress(epub, pos.spineIndex, intra);
-  }
+  // Reuse the KOSync-side mapper for xpointer resolution: it owns the
+  // intra → xpath fallback chain (progress-based, then paragraph-based, then
+  // synthesized DocFragment) and the upstream off-by-one fix for
+  // pageNumber ↔ intra. Readest accepts the same KOReader-style xpath.
+  const KOReaderPosition koPos = ProgressMapper::toKOReader(epub, pos);
+  r.xpointer = koPos.xpath;
   if (r.xpointer.empty()) {
     // Section-granularity fallback: bare DocFragment is enough to jump to
     // the correct chapter.
@@ -97,82 +77,33 @@ ReadestPosition ReadestProgressMapper::toReadest(const std::shared_ptr<Epub>& ep
 
 CrossPointPosition ReadestProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epub, const ReadestPosition& rPos,
                                                        int currentSpineIndex, int totalPagesInCurrentSpine) {
-  CrossPointPosition out{};
-  if (!epub) return out;
-  const int spineCount = epub->getSpineItemsCount();
-  if (spineCount <= 0) return out;
+  if (!epub) return {};
 
-  // Spine resolution priority:
-  //   1. xpointer DocFragment[N]   — exact, our preferred case
-  //   2. CFI spine step            — phone-only writers without prior xpointer
-  //   3. byte ratio from progress  — last-resort approximation
-  int spineIdx = -1;
-  const int frag = parseIndexAfter(rPos.xpointer, "/body/DocFragment[", false);
-  if (frag >= 1 && frag - 1 < spineCount) spineIdx = frag - 1;
-
-  if (spineIdx < 0 && !rPos.location.empty()) {
+  // Translate Readest position into a KOReader-format position and delegate.
+  // ProgressMapper handles spine resolution (DocFragment[N] in xpath, then
+  // byte-ratio from percentage), paragraphIndex/liIndex/anchor extraction,
+  // totalPages density rescale, and the upstream-fixed intra → pageNumber
+  // formula. The only Readest-specific input is CFI: when xpointer doesn't
+  // pin the spine, parse the CFI's spine step and synthesize a DocFragment
+  // xpath so ProgressMapper can take it from there.
+  KOReaderPosition koPos;
+  koPos.xpath = rPos.xpointer;
+  if (koPos.xpath.find("/body/DocFragment[") == std::string::npos && !rPos.location.empty()) {
     const int step = parseCfiSpineStep(rPos.location);
     if (step >= 2) {
+      const int spineCount = epub->getSpineItemsCount();
       const int candidate = (step - 2) / 2;
-      if (candidate >= 0 && candidate < spineCount) spineIdx = candidate;
-    }
-  }
-
-  const size_t bookSize = epub->getBookSize();
-  if (spineIdx < 0 && rPos.progressTotal > 0 && bookSize > 0) {
-    const float ratio =
-        std::clamp(static_cast<float>(rPos.progressCurrent) / static_cast<float>(rPos.progressTotal), 0.0f, 1.0f);
-    const size_t targetBytes = static_cast<size_t>(bookSize * ratio);
-    for (int i = 0; i < spineCount; ++i) {
-      if (epub->getCumulativeSpineItemSize(i) >= targetBytes) {
-        spineIdx = i;
-        break;
+      if (candidate >= 0 && candidate < spineCount) {
+        koPos.xpath = "/body/DocFragment[" + std::to_string(candidate + 1) + "]";
       }
     }
   }
-  if (spineIdx < 0) return out;
-  out.spineIndex = spineIdx;
+  koPos.percentage =
+      (rPos.progressTotal > 0)
+          ? std::clamp(static_cast<float>(rPos.progressCurrent) / static_cast<float>(rPos.progressTotal), 0.0f, 1.0f)
+          : 0.0f;
 
-  // Paragraph index: deepest `/p[N]` in the xpointer. Sub-paragraph offsets
-  // (`/text().<n>`) are ignored — navigation is at paragraph granularity.
-  const int xpathP = parseIndexAfter(rPos.xpointer, "/p[", true);
-  if (xpathP > 0) {
-    out.paragraphIndex = static_cast<uint16_t>(xpathP);
-    out.hasParagraphIndex = true;
-  }
-
-  // Pagination: prefer caller's exact pagination if they're already on the
-  // target spine. Otherwise rescale by byte-density relative to the current
-  // spine the caller knows about. The reader will ultimately repaginate on
-  // navigation, so totalPages is a hint, not a contract.
-  if (spineIdx == currentSpineIndex && totalPagesInCurrentSpine > 0) {
-    out.totalPages = totalPagesInCurrentSpine;
-  } else if (currentSpineIndex >= 0 && currentSpineIndex < spineCount && totalPagesInCurrentSpine > 0) {
-    const size_t curPrev = (currentSpineIndex > 0) ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
-    const size_t curSize = epub->getCumulativeSpineItemSize(currentSpineIndex) - curPrev;
-    const size_t prev = (spineIdx > 0) ? epub->getCumulativeSpineItemSize(spineIdx - 1) : 0;
-    const size_t size = epub->getCumulativeSpineItemSize(spineIdx) - prev;
-    if (curSize > 0) {
-      out.totalPages = std::max(
-          1, static_cast<int>(totalPagesInCurrentSpine * static_cast<float>(size) / static_cast<float>(curSize)));
-    }
-  }
-
-  // Intra-spine page from the book-wide ratio. paragraphIndex (if present)
-  // is the more precise signal — leave it for the reader to consume — but
-  // pageNumber still needs a sensible best-guess for the initial render.
-  if (out.totalPages > 0 && rPos.progressTotal > 0 && bookSize > 0) {
-    const size_t prev = (spineIdx > 0) ? epub->getCumulativeSpineItemSize(spineIdx - 1) : 0;
-    const size_t size = epub->getCumulativeSpineItemSize(spineIdx) - prev;
-    if (size > 0) {
-      const float bookRatio =
-          std::clamp(static_cast<float>(rPos.progressCurrent) / static_cast<float>(rPos.progressTotal), 0.0f, 1.0f);
-      const size_t targetBytes = static_cast<size_t>(bookSize * bookRatio);
-      const size_t bytesIn = (targetBytes > prev) ? (targetBytes - prev) : 0;
-      const float intra = std::clamp(static_cast<float>(bytesIn) / static_cast<float>(size), 0.0f, 1.0f);
-      out.pageNumber = std::clamp(static_cast<int>(intra * out.totalPages), 0, out.totalPages - 1);
-    }
-  }
+  CrossPointPosition out = ProgressMapper::toCrossPoint(epub, koPos, currentSpineIndex, totalPagesInCurrentSpine);
 
   LOG_DBG("RPM", "<- R: xpointer=%s progress=[%d,%d] -> spine=%d page=%d/%d para=%u%s", rPos.xpointer.c_str(),
           rPos.progressCurrent, rPos.progressTotal, out.spineIndex, out.pageNumber, out.totalPages, out.paragraphIndex,
