@@ -10,21 +10,29 @@
 #include "activities/Activity.h"
 
 // Sync reading progress with a Readest server.
-// Flow: WiFi → NTP → hash → pull → user picks Apply Remote / Upload Local
+// Flow: WiFi → NTP → pull → user picks Apply Remote / Upload Local
 // → apply or push → done. User-triggered only.
+//
+// Hashes and the local Readest-format position are precomputed by the caller
+// so this activity holds no live Epub during the TLS handshake (saves ~65KB
+// of heap). The Epub is lazy-loaded after the pull to map the remote position
+// onto a CrossPoint page number.
 class ReadestSyncActivity final : public Activity {
  public:
-  explicit ReadestSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                               const std::shared_ptr<Epub>& epub, const std::string& epubPath, int currentSpineIndex,
-                               int currentPage, int totalPagesInSpine,
+  explicit ReadestSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& epubPath,
+                               int currentSpineIndex, int currentPage, int totalPagesInSpine, std::string bookHash,
+                               std::string metaHash, ReadestPosition localReadest, std::string localChapterName,
                                std::optional<uint16_t> currentParagraphIndex = std::nullopt)
       : Activity("ReadestSync", renderer, mappedInput),
-        epub(epub),
         epubPath(epubPath),
         currentSpineIndex(currentSpineIndex),
         currentPage(currentPage),
         totalPagesInSpine(totalPagesInSpine),
-        currentParagraphIndex(currentParagraphIndex) {}
+        currentParagraphIndex(currentParagraphIndex),
+        bookHash(std::move(bookHash)),
+        metaHash(std::move(metaHash)),
+        localReadest(std::move(localReadest)),
+        localChapterName(std::move(localChapterName)) {}
 
   void onEnter() override;
   void onExit() override;
@@ -46,26 +54,26 @@ class ReadestSyncActivity final : public Activity {
     NO_CREDENTIALS,
   };
 
-  std::shared_ptr<Epub> epub;
+  std::shared_ptr<Epub> epub;  // null until lazy-loaded after the pull in performSync()
   std::string epubPath;
   int currentSpineIndex;
   int currentPage;
   int totalPagesInSpine;
   std::optional<uint16_t> currentParagraphIndex;
 
-  State state = WIFI_SELECTION;
-  std::string statusMessage;
   std::string bookHash;
   std::string metaHash;
+  ReadestPosition localReadest;
+  std::string localChapterName;
+
+  State state = WIFI_SELECTION;
+  std::string statusMessage;
 
   // Remote state — populated after a successful pull.
   bool hasRemote = false;
   ReadestSyncClient::BookConfig remoteConfig;
   CrossPointPosition remotePosition;
-
-  // Local position rendered into Readest wire format for the comparison
-  // screen. Computed once at sync time so the same numbers display and push.
-  ReadestPosition localReadest;
+  std::string remoteChapterName;
 
   // Selection in the comparison screen: 0 = Apply remote, 1 = Upload local.
   int selectedOption = 0;
@@ -73,5 +81,7 @@ class ReadestSyncActivity final : public Activity {
   void onWifiSelectionComplete(bool success);
   void performSync();
   void performUpload();
-  bool computeHashes();  // Populates bookHash + metaHash; returns false on failure with state set.
+  void ensureEpubLoaded();
+  void saveProgressAndReturn(int spineIndex, int page);
+  void returnToReader();
 };

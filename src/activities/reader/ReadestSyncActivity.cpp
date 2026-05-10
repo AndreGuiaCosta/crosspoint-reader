@@ -10,26 +10,19 @@
 #include <WiFi.h>
 #include <esp_sntp.h>
 
+#include <cassert>
 #include <cstdio>
 #include <ctime>
 
 #include "Epub/Section.h"
+#include "EpubReaderUtils.h"
 #include "MappedInputManager.h"
+#include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
-CrossPointPosition makeLocalPositionWithParagraph(const int spineIndex, const int page, const int totalPages,
-                                                  const std::optional<uint16_t>& paragraphIndex) {
-  CrossPointPosition pos = {spineIndex, page, totalPages};
-  if (paragraphIndex.has_value()) {
-    pos.paragraphIndex = *paragraphIndex;
-    pos.hasParagraphIndex = true;
-  }
-  return pos;
-}
-
 void wifiOff() {
   if (esp_sntp_enabled()) {
     esp_sntp_stop();
@@ -41,26 +34,40 @@ void wifiOff() {
 }
 }  // namespace
 
-bool ReadestSyncActivity::computeHashes() {
-  bookHash = ReadestHash::partialMd5(epubPath);
-  metaHash = ReadestHash::metaMd5(*epub);
-  if (bookHash.empty() || metaHash.empty()) {
-    RenderLock lock(*this);
-    state = SYNC_FAILED;
-    statusMessage = tr(STR_HASH_FAILED);
-    return false;
+void ReadestSyncActivity::ensureEpubLoaded() {
+  if (!epub) {
+    LOG_DBG("RSync", "Loading epub for progress mapping (heap: %u)", (unsigned)ESP.getFreeHeap());
+    epub = std::make_shared<Epub>(epubPath, "/.crosspoint");
+    epub->setupCacheDir();
+    if (!epub->load(false, true)) {
+      LOG_ERR("RSync", "Failed to load epub for progress mapping");
+      epub.reset();
+      return;
+    }
+    LOG_DBG("RSync", "Epub loaded (heap: %u)", (unsigned)ESP.getFreeHeap());
   }
-  LOG_DBG("RSync", "book_hash=%s meta_hash=%s", bookHash.c_str(), metaHash.c_str());
-  return true;
 }
+
+void ReadestSyncActivity::saveProgressAndReturn(int spineIndex, int page) {
+  assert(epub);
+  if (!EpubReaderUtils::saveProgress(*epub, spineIndex, page, 0)) {
+    {
+      RenderLock lock(*this);
+      state = SYNC_FAILED;
+      statusMessage = tr(STR_SAVE_PROGRESS_FAILED);
+    }
+    requestUpdate(true);
+    return;
+  }
+  returnToReader();
+}
+
+void ReadestSyncActivity::returnToReader() { activityManager.goToReader(epubPath); }
 
 void ReadestSyncActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
     LOG_DBG("RSync", "WiFi connection failed, exiting");
-    ActivityResult result;
-    result.isCancelled = true;
-    setResult(std::move(result));
-    finish();
+    returnToReader();
     return;
   }
 
@@ -75,17 +82,6 @@ void ReadestSyncActivity::onWifiSelectionComplete(const bool success) {
 
   // Supabase rejects skewed clocks on token refresh.
   NtpSync::syncTime();
-
-  {
-    RenderLock lock(*this);
-    statusMessage = tr(STR_CALC_HASH);
-  }
-  requestUpdate(true);
-
-  if (!computeHashes()) {
-    requestUpdate(true);
-    return;
-  }
 
   performSync();
 }
@@ -123,6 +119,19 @@ void ReadestSyncActivity::performSync() {
 
   hasRemote = true;
   remoteConfig = pulled;
+
+  // Epub was released before sync to free RAM for the TLS handshake — reload it now.
+  ensureEpubLoaded();
+  if (!epub) {
+    {
+      RenderLock lock(*this);
+      state = SYNC_FAILED;
+      statusMessage = "";
+    }
+    requestUpdate(true);
+    return;
+  }
+
   ReadestPosition rPos;
   rPos.xpointer = remoteConfig.xpointer;
   rPos.location = remoteConfig.location;
@@ -141,11 +150,10 @@ void ReadestSyncActivity::performSync() {
     }
   }
 
-  // Cache local-side representation so the comparison screen and the
-  // upload path share the same numbers.
-  CrossPointPosition localPos =
-      makeLocalPositionWithParagraph(currentSpineIndex, currentPage, totalPagesInSpine, currentParagraphIndex);
-  localReadest = ReadestProgressMapper::toReadest(epub, localPos);
+  const int remoteTocIndex = epub->getTocIndexForSpineIndex(remotePosition.spineIndex);
+  remoteChapterName = (remoteTocIndex >= 0)
+                          ? epub->getTocItem(remoteTocIndex).title
+                          : (std::string(tr(STR_SECTION_PREFIX)) + std::to_string(remotePosition.spineIndex + 1));
 
   RenderLock lock(*this);
   state = SHOWING_RESULT;
@@ -167,13 +175,6 @@ void ReadestSyncActivity::performUpload() {
     statusMessage = tr(STR_UPLOAD_PROGRESS);
   }
   requestUpdateAndWait();
-
-  // NO_REMOTE_PROGRESS skips the cache step; recompute on the fly.
-  if (localReadest.xpointer.empty() && localReadest.progressTotal == 0) {
-    CrossPointPosition localPos =
-        makeLocalPositionWithParagraph(currentSpineIndex, currentPage, totalPagesInSpine, currentParagraphIndex);
-    localReadest = ReadestProgressMapper::toReadest(epub, localPos);
-  }
 
   ReadestSyncClient::BookConfig push;
   push.bookHash = bookHash;
@@ -254,14 +255,10 @@ void ReadestSyncActivity::render(RenderLock&&) {
   if (state == SHOWING_RESULT) {
     renderer.drawCenteredText(UI_10_FONT_ID, 120, tr(STR_PROGRESS_FOUND), true, EpdFontFamily::BOLD);
 
-    const int remoteTocIndex = epub->getTocIndexForSpineIndex(remotePosition.spineIndex);
-    const int localTocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
-    const std::string remoteChapter =
-        (remoteTocIndex >= 0) ? epub->getTocItem(remoteTocIndex).title
-                              : (std::string(tr(STR_SECTION_PREFIX)) + std::to_string(remotePosition.spineIndex + 1));
-    const std::string localChapter =
-        (localTocIndex >= 0) ? epub->getTocItem(localTocIndex).title
-                             : (std::string(tr(STR_SECTION_PREFIX)) + std::to_string(currentSpineIndex + 1));
+    const std::string& remoteChapter = remoteChapterName;
+    const std::string& localChapter =
+        localChapterName.empty() ? (std::string(tr(STR_SECTION_PREFIX)) + std::to_string(currentSpineIndex + 1))
+                                 : localChapterName;
 
     // Remote — chapter, page, last-updated source/timestamp.
     renderer.drawText(UI_10_FONT_ID, 20, 160, tr(STR_REMOTE_LABEL), true);
@@ -337,12 +334,20 @@ void ReadestSyncActivity::render(RenderLock&&) {
 }
 
 void ReadestSyncActivity::loop() {
-  if (state == NO_CREDENTIALS || state == SYNC_FAILED || state == UPLOAD_COMPLETE) {
+  if (state == NO_CREDENTIALS) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      // No epub was loaded yet — just unwind directly.
       ActivityResult result;
       result.isCancelled = true;
       setResult(std::move(result));
       finish();
+    }
+    return;
+  }
+
+  if (state == SYNC_FAILED || state == UPLOAD_COMPLETE) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      returnToReader();
     }
     return;
   }
@@ -361,39 +366,25 @@ void ReadestSyncActivity::loop() {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (selectedOption == 0) {
         // Apply remote — wifi torn down in onExit().
-        setResult(SyncResult{remotePosition.spineIndex, remotePosition.pageNumber});
-        finish();
+        saveProgressAndReturn(remotePosition.spineIndex, remotePosition.pageNumber);
       } else if (selectedOption == 1) {
         performUpload();
       }
     }
 
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      ActivityResult result;
-      result.isCancelled = true;
-      setResult(std::move(result));
-      finish();
+      returnToReader();
     }
     return;
   }
 
   if (state == NO_REMOTE_PROGRESS) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      // Defensive recompute in case we entered NO_REMOTE_PROGRESS without one.
-      if (bookHash.empty() || metaHash.empty()) {
-        if (!computeHashes()) {
-          requestUpdate(true);
-          return;
-        }
-      }
       performUpload();
     }
 
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      ActivityResult result;
-      result.isCancelled = true;
-      setResult(std::move(result));
-      finish();
+      returnToReader();
     }
     return;
   }
