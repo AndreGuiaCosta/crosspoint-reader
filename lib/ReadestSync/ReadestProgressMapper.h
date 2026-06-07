@@ -25,7 +25,10 @@ class ReadestProgressMapper {
   static ReadestPosition toReadest(const std::shared_ptr<Epub>& epub, const CrossPointPosition& pos);
 
   // currentSpineIndex / totalPagesInCurrentSpine let the result rescale
-  // pages-per-spine across chapters with different densities.
+  // pages-per-spine across chapters with different densities. `renderer` is
+  // forwarded to ProgressMapper::toCrossPoint for its XHTML-streaming xpath
+  // fallback.
   static CrossPointPosition toCrossPoint(const std::shared_ptr<Epub>& epub, const ReadestPosition& rPos,
-                                         int currentSpineIndex = -1, int totalPagesInCurrentSpine = 0);
+                                         GfxRenderer& renderer, int currentSpineIndex = -1,
+                                         int totalPagesInCurrentSpine = 0);
 };

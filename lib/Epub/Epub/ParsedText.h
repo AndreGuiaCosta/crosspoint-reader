@@ -15,12 +15,23 @@ class GfxRenderer;
 class ParsedText {
   std::vector<std::string> words;
   std::vector<EpdFontFamily::Style> wordStyles;
-  std::vector<bool> wordContinues;  // true = word attaches to previous (no space before it)
+  std::vector<bool> wordContinues;      // true = word attaches to previous (no space before it)
+  std::vector<bool> wordIsFocusSuffix;  // true = token is the regular tail of a focus bold-prefix split
   BlockStyle blockStyle;
   bool extraParagraphSpacing;
   bool hyphenationEnabled;
+  bool focusReadingEnabled;
+  bool isNaturalAlign;
+  bool hasRtlWord;
+  std::vector<std::string> reorderedWordsScratch;
+  std::vector<EpdFontFamily::Style> reorderedStylesScratch;
+  std::vector<uint16_t> reorderedWidthsScratch;
+  std::vector<bool> reorderedContinuesScratch;
+  std::vector<bool> reorderedFocusSuffixScratch;
+  std::vector<uint16_t> visualOrderScratch;
 
   void applyParagraphIndent();
+  int resolveFirstLineIndent(bool isFirstLine) const;
   std::vector<size_t> computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
                                         std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec);
   std::vector<size_t> computeHyphenatedLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth,
@@ -35,8 +46,13 @@ class ParsedText {
 
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool hyphenationEnabled = false,
-                      const BlockStyle& blockStyle = BlockStyle())
-      : blockStyle(blockStyle), extraParagraphSpacing(extraParagraphSpacing), hyphenationEnabled(hyphenationEnabled) {}
+                      const bool focusReadingEnabled = false, const BlockStyle& blockStyle = BlockStyle())
+      : blockStyle(blockStyle),
+        extraParagraphSpacing(extraParagraphSpacing),
+        hyphenationEnabled(hyphenationEnabled),
+        focusReadingEnabled(focusReadingEnabled),
+        isNaturalAlign(false),
+        hasRtlWord(false) {}
   ~ParsedText() = default;
 
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false);

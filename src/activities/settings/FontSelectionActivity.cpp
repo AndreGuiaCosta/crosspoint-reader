@@ -21,7 +21,6 @@ void FontSelectionActivity::onEnter() {
 
   fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), true, 0});
   fonts_.push_back({I18N.get(StrId::STR_NOTO_SANS), true, 1});
-  fonts_.push_back({I18N.get(StrId::STR_OPEN_DYSLEXIC), true, 2});
 
   if (registry_) {
     const auto& families = registry_->getFamilies();
@@ -60,13 +59,26 @@ void FontSelectionActivity::loop() {
     return;
   }
 
-  buttonNavigator_.onNextRelease([this] {
-    selectedIndex_ = ButtonNavigator::nextIndex(selectedIndex_, static_cast<int>(fonts_.size()));
+  const int listSize = static_cast<int>(fonts_.size());
+  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false);
+
+  buttonNavigator_.onNextRelease([this, listSize] {
+    selectedIndex_ = ButtonNavigator::nextIndex(selectedIndex_, listSize);
     requestUpdate();
   });
 
-  buttonNavigator_.onPreviousRelease([this] {
-    selectedIndex_ = ButtonNavigator::previousIndex(selectedIndex_, static_cast<int>(fonts_.size()));
+  buttonNavigator_.onPreviousRelease([this, listSize] {
+    selectedIndex_ = ButtonNavigator::previousIndex(selectedIndex_, listSize);
+    requestUpdate();
+  });
+
+  buttonNavigator_.onNextContinuous([this, listSize, pageItems] {
+    selectedIndex_ = ButtonNavigator::nextPageIndex(selectedIndex_, listSize, pageItems);
+    requestUpdate();
+  });
+
+  buttonNavigator_.onPreviousContinuous([this, listSize, pageItems] {
+    selectedIndex_ = ButtonNavigator::previousPageIndex(selectedIndex_, listSize, pageItems);
     requestUpdate();
   });
 }

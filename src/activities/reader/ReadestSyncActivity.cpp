@@ -137,7 +137,7 @@ void ReadestSyncActivity::performSync() {
   rPos.location = remoteConfig.location;
   rPos.progressCurrent = remoteConfig.progressCurrent;
   rPos.progressTotal = remoteConfig.progressTotal;
-  remotePosition = ReadestProgressMapper::toCrossPoint(epub, rPos, currentSpineIndex, totalPagesInSpine);
+  remotePosition = ReadestProgressMapper::toCrossPoint(epub, rPos, renderer, currentSpineIndex, totalPagesInSpine);
 
   // Refine the page from a paragraph anchor via the section LUT.
   if (remotePosition.hasParagraphIndex) {

@@ -38,7 +38,7 @@ ReadestPosition ReadestProgressMapper::toReadest(const std::shared_ptr<Epub>& ep
   // intra → xpath fallback chain (progress-based, then paragraph-based, then
   // synthesized DocFragment) and the upstream off-by-one fix for
   // pageNumber ↔ intra. Readest accepts the same KOReader-style xpath.
-  const KOReaderPosition koPos = ProgressMapper::toKOReader(epub, pos);
+  const SavedProgressPosition koPos = ProgressMapper::toSavedProgress(epub, pos);
   r.xpointer = koPos.xpath;
   if (r.xpointer.empty()) {
     // Section-granularity fallback: bare DocFragment is enough to jump to
@@ -76,7 +76,8 @@ ReadestPosition ReadestProgressMapper::toReadest(const std::shared_ptr<Epub>& ep
 }
 
 CrossPointPosition ReadestProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epub, const ReadestPosition& rPos,
-                                                       int currentSpineIndex, int totalPagesInCurrentSpine) {
+                                                       GfxRenderer& renderer, int currentSpineIndex,
+                                                       int totalPagesInCurrentSpine) {
   if (!epub) return {};
 
   // Translate Readest position into a KOReader-format position and delegate.
@@ -86,7 +87,7 @@ CrossPointPosition ReadestProgressMapper::toCrossPoint(const std::shared_ptr<Epu
   // formula. The only Readest-specific input is CFI: when xpointer doesn't
   // pin the spine, parse the CFI's spine step and synthesize a DocFragment
   // xpath so ProgressMapper can take it from there.
-  KOReaderPosition koPos;
+  SavedProgressPosition koPos;
   koPos.xpath = rPos.xpointer;
   if (koPos.xpath.find("/body/DocFragment[") == std::string::npos && !rPos.location.empty()) {
     const int step = parseCfiSpineStep(rPos.location);
@@ -103,7 +104,7 @@ CrossPointPosition ReadestProgressMapper::toCrossPoint(const std::shared_ptr<Epu
           ? std::clamp(static_cast<float>(rPos.progressCurrent) / static_cast<float>(rPos.progressTotal), 0.0f, 1.0f)
           : 0.0f;
 
-  CrossPointPosition out = ProgressMapper::toCrossPoint(epub, koPos, currentSpineIndex, totalPagesInCurrentSpine);
+  CrossPointPosition out = ProgressMapper::toCrossPoint(epub, koPos, renderer, currentSpineIndex, totalPagesInCurrentSpine);
 
   LOG_DBG("RPM", "<- R: xpointer=%s progress=[%d,%d] -> spine=%d page=%d/%d para=%u%s", rPos.xpointer.c_str(),
           rPos.progressCurrent, rPos.progressTotal, out.spineIndex, out.pageNumber, out.totalPages, out.paragraphIndex,

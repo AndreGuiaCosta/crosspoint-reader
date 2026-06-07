@@ -30,9 +30,10 @@ class Epub {
   // CSS files
   std::vector<std::string> cssFiles;
 
-  bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata);
+  bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool writeSpineEntries = true);
   bool parseTocNcxFile() const;
   bool parseTocNavFile() const;
+  void discoverCssFilesFromZip();
   void parseCssFiles() const;
 
  public:

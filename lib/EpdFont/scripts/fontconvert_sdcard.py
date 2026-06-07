@@ -22,7 +22,8 @@ Usage:
 
 """
 
-import freetype
+from __future__ import annotations
+
 import struct
 import sys
 import os
@@ -30,8 +31,6 @@ import re
 import math
 import argparse
 from collections import namedtuple
-
-from fontTools.ttLib import TTFont
 
 from cpfont_version import CPFONT_VERSION
 
@@ -44,6 +43,7 @@ INTERVAL_PRESETS = {
                     (0x1E00, 0x1EFF), (0x2000, 0x206F), (0xFB00, 0xFB06)],
     "greek":       [(0x0370, 0x03FF), (0x1F00, 0x1FFF)],
     "cyrillic":    [(0x0400, 0x04FF), (0x0500, 0x052F)],
+    "hebrew":      [(0x0590, 0x05FF), (0xFB1D, 0xFB4F)],
     "georgian":    [(0x10A0, 0x10FF), (0x2D00, 0x2D2F)],
     "armenian":    [(0x0530, 0x058F)],
     "ethiopic":    [(0x1200, 0x137F), (0x1380, 0x139F), (0x2D80, 0x2DDF)],
@@ -60,12 +60,14 @@ INTERVAL_PRESETS = {
                     (0x2190, 0x21FF), (0x2200, 0x22FF), (0x2500, 0x257F),
                     (0x25A0, 0x25FF), (0x2600, 0x26FF), (0x2700, 0x27BF)],
     # Composite preset for English-language literary fiction including scifi/popsci.
-    # Greek for physics terms, math operators, miscellaneous symbols (♪♫♬), dingbats.
+    # Greek for physics terms, math operators, geometric shapes, uncommon
+    # dialogue punctuation, CJK quote marks, miscellaneous symbols (♪♫♬), dingbats.
     "reading":     [(0x0020, 0x024F), (0x0300, 0x036F), (0x0370, 0x03FF),
                     (0x0400, 0x04FF), (0x1E00, 0x1EFF), (0x2000, 0x206F),
                     (0x2070, 0x209F), (0x20A0, 0x20CF), (0x2150, 0x218F),
                     (0x2190, 0x21FF), (0x2200, 0x22FF), (0x2500, 0x257F),
                     (0x25A0, 0x25FF), (0x2600, 0x26FF), (0x2700, 0x27BF),
+                    (0x2900, 0x29FF), (0x2E00, 0x2E7F), (0x3000, 0x303F),
                     (0xFB00, 0xFB06)],
     # Matches the built-in font intervals from fontconvert.py exactly
     "builtin":     [(0x0000, 0x007F), (0x0080, 0x00FF), (0x0100, 0x017F),
@@ -252,6 +254,8 @@ def extract_kerning_fonttools(font_path, codepoints, ppem):
     codepoints.  Values are scaled from font design units to integer
     pixels at ppem.
     """
+    from fontTools.ttLib import TTFont
+
     font = TTFont(font_path)
     units_per_em = font['head'].unitsPerEm
     cmap = font.getBestCmap() or {}
@@ -402,6 +406,8 @@ def extract_ligatures_fonttools(font_path, codepoints):
     Returns list of (packed_pair, ligature_codepoint) for the given codepoints.
     Multi-character ligatures are decomposed into chained pairs.
     """
+    from fontTools.ttLib import TTFont
+
     font = TTFont(font_path)
     cmap = font.getBestCmap() or {}
 
@@ -514,6 +520,8 @@ def extract_ligatures_fonttools(font_path, codepoints):
 
 def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=False):
     """Rasterize all glyphs for one font style. Returns StyleRasterData."""
+    import freetype
+
     style_names = {0: "regular", 1: "bold", 2: "italic", 3: "bolditalic"}
     style_label = style_names.get(style_id, str(style_id))
 
