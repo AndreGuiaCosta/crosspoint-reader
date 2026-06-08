@@ -47,6 +47,10 @@
 #include "ProgressMapper.h"
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
+#include "ReadestAccountStore.h"
+#include "ReadestHash.h"
+#include "ReadestProgressMapper.h"
+#include "ReadestSyncActivity.h"
 #include "RecentBooksStore.h"
 #include <ArduinoJson.h>  // for .pxc manifest parse
 
@@ -2713,6 +2717,59 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         activityManager.replaceActivity(std::make_unique<KOReaderSyncActivity>(
             renderer, mappedInput, savedEpubPath, currentSpineIndex, currentPage, totalPages, std::move(localKoPos),
             std::move(localChapterName), paragraphIndex));
+      }
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::SYNC_READEST: {
+      if (READEST_STORE.hasCredentials()) {
+        const int currentPage = section ? section->currentPage : nextPageNumber;
+        const int totalPages = section ? section->pageCount : cachedChapterTotalPageCount;
+        std::optional<uint16_t> paragraphIndex;
+        if (section && currentPage >= 0 && currentPage < section->pageCount) {
+          const uint16_t paragraphPage =
+              currentPage > 0 ? static_cast<uint16_t>(currentPage - 1) : static_cast<uint16_t>(currentPage);
+          if (const auto pIdx = section->getParagraphIndexForPage(paragraphPage)) {
+            paragraphIndex = *pIdx;
+          }
+        }
+
+        // Pre-compute Readest position + book-identification hashes while the
+        // Epub is still in RAM. Epub stays alive until onExit() (matching the
+        // KOReader path above); only the heavy Section is released below.
+        CrossPointPosition localPos = {currentSpineIndex, currentPage, totalPages};
+        if (paragraphIndex.has_value()) {
+          localPos.paragraphIndex = *paragraphIndex;
+          localPos.hasParagraphIndex = true;
+        }
+        const std::string savedEpubPath = epub->getPath();
+        std::string bookHash = ReadestHash::partialMd5(savedEpubPath);
+        std::string metaHash = ReadestHash::metaMd5(*epub);
+        ReadestPosition localReadest = ReadestProgressMapper::toReadest(epub, localPos);
+        const int tocIdx = epub->getTocIndexForSpineIndex(currentSpineIndex);
+        std::string localChapterName = (tocIdx >= 0) ? epub->getTocItem(tocIdx).title : "";
+
+        // Persist current position so the reader resumes at the right page on return.
+        // goToReader() depends on this file, so abort the sync if the write fails.
+        if (!saveProgress(currentSpineIndex, currentPage, totalPages)) {
+          LOG_ERR("RSync", "Aborting sync because current progress could not be saved");
+          pendingSyncSaveError = true;
+          requestUpdate();
+          return;
+        }
+
+        LOG_DBG("RSync", "Releasing section for sync (heap before: %u)", (unsigned)ESP.getFreeHeap());
+        {
+          RenderLock lock(*this);
+          if (section) {
+            nextPageNumber = section->currentPage;
+          }
+          section.reset();
+        }
+        LOG_DBG("RSync", "Section released for sync (heap after: %u)", (unsigned)ESP.getFreeHeap());
+
+        activityManager.replaceActivity(std::make_unique<ReadestSyncActivity>(
+            renderer, mappedInput, savedEpubPath, currentSpineIndex, currentPage, totalPages, std::move(bookHash),
+            std::move(metaHash), std::move(localReadest), std::move(localChapterName), paragraphIndex));
       }
       break;
     }

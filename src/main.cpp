@@ -70,6 +70,9 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
+#include "ReadestAccountStore.h"
+#include "ReadestBookCatalog.h"
+#include "ReadestLibraryStore.h"
 #include "CollectionsStore.h"
 #include "LibraryIndex.h"
 #include "RecentBooksStore.h"
@@ -1089,6 +1092,9 @@ void setup() {
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
+  READEST_STORE.loadFromFile();
+  READEST_LIB_STORE.loadFromFile();
+  READEST_CATALOG.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 

@@ -37,7 +37,6 @@ class Epub {
   std::string lastSeriesIndex;
 
   void migrateLegacyCachePath(const std::string& cacheDir) const;
-  bool findContentOpfFile(std::string* contentOpfFile) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata);
   bool parseTocNcxFile() const;
   bool parseTocNavFile() const;
@@ -49,6 +48,9 @@ class Epub {
   static std::string cachePathForFilePath(const std::string& filepath, const std::string& cacheDir);
   std::string& getBasePath() { return contentBasePath; }
   bool load(bool buildIfMissing = true, bool skipLoadingCss = false);
+  // Resolve the OPF rootfile path from META-INF/container.xml. Public so
+  // callers can re-read fields BookMetadataCache does not persist.
+  bool findContentOpfFile(std::string* contentOpfFile) const;
   bool clearCache() const;
   void setupCacheDir() const;
   const std::string& getCachePath() const;

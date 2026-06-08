@@ -1379,7 +1379,10 @@ void CrossPointWebServer::primeSettingsCache() {
       }
       case SettingType::STRING: {
         doc["type"] = "string";
-        if (s.stringGetter) {
+        if (s.writeOnly) {
+          // Never echo write-only fields (e.g. passwords).
+          doc["value"] = "";
+        } else if (s.stringGetter) {
           doc["value"] = s.stringGetter();
         } else if (s.stringMaxLen > 0) {
           doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset;
@@ -1475,6 +1478,8 @@ void CrossPointWebServer::handlePostSettings() {
       }
       case SettingType::STRING: {
         const std::string val = doc[s.key].as<std::string>();
+        // Empty write-only field means "no change" — preserve the stored value.
+        if (s.writeOnly && val.empty()) break;
         if (s.stringSetter) {
           s.stringSetter(val);
         } else if (s.stringMaxLen > 0) {

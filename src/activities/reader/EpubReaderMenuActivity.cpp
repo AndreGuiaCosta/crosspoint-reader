@@ -12,6 +12,7 @@
 #include "CrossPointSettings.h"
 #include "EpubReaderActivity.h"  // prewarmReaderTextBuffer
 #include "MappedInputManager.h"
+#include "ReadestAccountStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -169,6 +170,10 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMainM
   items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
   items.push_back({MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT});
   items.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});
+  // Readest sync is a separate provider; only surfaced when configured.
+  if (READEST_STORE.hasCredentials()) {
+    items.push_back({MenuAction::SYNC_READEST, StrId::STR_READEST_SYNC});
+  }
   items.push_back({MenuAction::READER_OPTIONS, StrId::STR_READER_OPTIONS});
   items.push_back({MenuAction::CONTROLS_OPTIONS, StrId::STR_CAT_CONTROLS});
   // CrumBLE: Bookmarks is a sub-screen with the four management entries.

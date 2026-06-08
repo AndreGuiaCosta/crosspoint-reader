@@ -43,6 +43,7 @@
 #include "FileBrowserActionActivity.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
+#include "ReadestAccountStore.h"
 #include "RearrangeCollectionsActivity.h"
 #include "RecentBookProgress.h"
 #include "RecentBooksStore.h"
@@ -72,6 +73,7 @@ enum class HomeMenuAction {
   ContinueReading,
   RecentBooks,
   OpdsBrowser,
+  ReadestLibrary,
   ReadingStats,
   Bookmarks,
   FileTransfer,
@@ -243,6 +245,9 @@ std::vector<HomeMenuEntry> buildHomeMenuItems(bool hasOpdsServers, bool hasReadi
   if (hasOpdsServers) {
     items.push_back({tr(STR_OPDS_BROWSER), Library, HomeMenuAction::OpdsBrowser});
   }
+  if (READEST_STORE.hasCredentials()) {
+    items.push_back({tr(STR_READEST_LIBRARY), Library, HomeMenuAction::ReadestLibrary});
+  }
   if (hasReadingStats) {
     items.push_back({tr(STR_READING_STATS), Chart, HomeMenuAction::ReadingStats});
   }
@@ -262,6 +267,9 @@ std::vector<HomeMenuEntry> buildMinimalMenuItems(bool hasOpdsServers, bool hasRe
 
   if (hasOpdsServers) {
     items.push_back({tr(STR_OPDS_BROWSER), Library, HomeMenuAction::OpdsBrowser});
+  }
+  if (READEST_STORE.hasCredentials()) {
+    items.push_back({tr(STR_READEST_LIBRARY), Library, HomeMenuAction::ReadestLibrary});
   }
   if (hasBookmarks) {
     items.push_back({tr(STR_BOOKMARKS), BookmarkIcon, HomeMenuAction::Bookmarks});
@@ -524,6 +532,9 @@ int HomeActivity::getMenuItemCount() const {
     count++;  // Continue Reading menu item
   }
   if (hasOpdsServers) {
+    count++;
+  }
+  if (READEST_STORE.hasCredentials()) {
     count++;
   }
   if (hasReadingStats) {
@@ -2724,6 +2735,9 @@ void HomeActivity::loop() {
           case HomeMenuAction::OpdsBrowser:
             onOpdsBrowserOpen();
             break;
+          case HomeMenuAction::ReadestLibrary:
+            onReadestLibraryOpen();
+            break;
           case HomeMenuAction::ReadingStats:
             onReadingStatsOpen();
             break;
@@ -3302,6 +3316,9 @@ void HomeActivity::loop() {
         break;
       case HomeMenuAction::OpdsBrowser:
         onOpdsBrowserOpen();
+        break;
+      case HomeMenuAction::ReadestLibrary:
+        onReadestLibraryOpen();
         break;
       case HomeMenuAction::ReadingStats:
         onReadingStatsOpen();
@@ -4024,6 +4041,8 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
+
+void HomeActivity::onReadestLibraryOpen() { activityManager.goToReadestLibrary(); }
 
 void HomeActivity::onReadingStatsOpen() {
   const int highlightedBookIdx = getHighlightedBookIndex();

@@ -21,6 +21,7 @@ enum class SettingAction {
   RemapFrontButtonsReader,
   CustomiseStatusBar,
   KOReaderSync,
+  ReadestSync,
   OPDSBrowser,
   Network,
   ClearCache,
@@ -49,6 +50,7 @@ struct SettingInfo {
   const char* key = nullptr;             // JSON API key (nullptr for ACTION types)
   StrId category = StrId::STR_NONE_OPT;  // Category for web UI grouping
   bool obfuscated = false;               // Save/load via base64 obfuscation (passwords)
+  bool writeOnly = false;                // Web UI: never echo the stored value back (empty POST preserves it)
 
   // Direct char[] string fields (for settings stored in CrossPointSettings)
   size_t stringOffset = 0;
@@ -66,6 +68,11 @@ struct SettingInfo {
 
   SettingInfo& withObfuscated() {
     obfuscated = true;
+    return *this;
+  }
+
+  SettingInfo& withWriteOnly() {
+    writeOnly = true;
     return *this;
   }
 

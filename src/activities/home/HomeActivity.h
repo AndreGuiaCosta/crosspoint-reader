@@ -236,6 +236,7 @@ class HomeActivity final : public Activity {
   void onSettingsOpen();
   void onFileTransferOpen();
   void onOpdsBrowserOpen();
+  void onReadestLibraryOpen();
   void onReadingStatsOpen();
   void onBookmarksOpen();
 

@@ -17,6 +17,7 @@
 #include "FontSelectionActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "LanguageSelectActivity.h"
+#include "ReadestSettingsActivity.h"
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
@@ -258,6 +259,7 @@ void SettingsActivity::rebuildSettingsLists() {
   std::vector<SettingInfo> syncChildren;
   syncChildren.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
   syncChildren.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
+  syncChildren.push_back(SettingInfo::Action(StrId::STR_READEST_SYNC, SettingAction::ReadestSync));
   syncChildren.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
 
   rootSettings_.push_back(SettingInfo::Submenu(StrId::STR_CAT_SYNC_NETWORK, std::move(syncChildren)));
@@ -431,6 +433,9 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::KOReaderSync:
         startActivityForResult(std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::ReadestSync:
+        startActivityForResult(std::make_unique<ReadestSettingsActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::OPDSBrowser:
         startActivityForResult(std::make_unique<OpdsServerListActivity>(renderer, mappedInput), resultHandler);

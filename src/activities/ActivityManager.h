@@ -24,7 +24,7 @@ class Activity;    // forward declaration
 class RenderLock;  // forward declaration
 
 enum class RequestUpdateResult { Rendered, Rejected };
-enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU };
+enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, READEST_LIBRARY, FILE_TRANSFER, SETTINGS_MENU };
 
 /**
  * ActivityManager
@@ -98,6 +98,7 @@ class ActivityManager {
   // RECENT_BOOKS). Empty collectionId defaults to the active collection.
   void goToBookshelf(std::string collectionId = {});
   void goToBrowser();
+  void goToReadestLibrary();
   void goToReader(std::string path, bool suppressBackRelease = false);
   void goToSleep(bool fromTimeout = false);
   void goToBoot();
