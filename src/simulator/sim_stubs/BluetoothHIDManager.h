@@ -33,9 +33,11 @@ class BluetoothHIDManager {
 
   // Deferred enable/disable
   void requestDisableLater() {}
+  bool isDisableLaterRequested() const { return false; }
   bool tryDisableIfRequested() { return false; }
   void requestEnableLater() {}
   bool tryEnableIfRequested() { return false; }
+  bool takeConnectionLostAlert() { return false; }
 
   // Scanning
   void startScan(uint32_t /*durationMs*/ = 10000) {}
