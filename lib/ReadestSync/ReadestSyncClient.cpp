@@ -1,26 +1,17 @@
 #include "ReadestSyncClient.h"
 
 #include <ArduinoJson.h>
-#include <HTTPClient.h>
 #include <Logging.h>
-#include <ReadestTlsConfig.h>
-#include <WiFiClientSecure.h>
 
 #include <cstdio>
 
 #include "ReadestAccountStore.h"
+#include "ReadestHttp.h"
 #include "ReadestTimeUtils.h"
 
 namespace {
 constexpr int SYNC_CONNECT_TIMEOUT = 5000;
 constexpr int SYNC_READ_TIMEOUT = 10000;
-
-void configureTls(WiFiClientSecure& client) { ReadestTls::configure(client); }
-
-void addAuthHeaders(HTTPClient& http, const std::string& accessToken) {
-  http.addHeader("Authorization", (std::string("Bearer ") + accessToken).c_str());
-  http.addHeader("Accept", "application/json");
-}
 
 ReadestSyncClient::Error mapHttpStatus(int code) {
   using E = ReadestSyncClient::Error;
@@ -30,15 +21,6 @@ ReadestSyncClient::Error mapHttpStatus(int code) {
   if (code >= 500) return E::SERVER_ERROR;
   if (code < 0) return E::NETWORK_ERROR;
   return E::SERVER_ERROR;
-}
-
-void extractErrorMessage(const String& body, std::string* errMsg) {
-  if (!errMsg) return;
-  JsonDocument doc;
-  if (deserializeJson(doc, body.c_str(), body.length()) != DeserializationError::Ok) return;
-  std::string msg = doc["error"] | std::string("");
-  if (msg.empty()) msg = doc["message"] | std::string("");
-  if (!msg.empty()) *errMsg = std::move(msg);
 }
 
 bool parseProgressString(const std::string& s, int* cur, int* total) {
@@ -77,35 +59,19 @@ ReadestSyncClient::Error ReadestSyncClient::pullConfig(int64_t sinceMs, const st
 
   char sinceBuf[32];
   std::snprintf(sinceBuf, sizeof(sinceBuf), "%lld", static_cast<long long>(sinceMs));
-  std::string url = READEST_STORE.getSyncApiBase() + "/sync?since=" + sinceBuf + "&type=configs&book=" + bookHash +
-                    "&meta_hash=" + metaHash;
-  LOG_DBG("RSYNC", "pull: %s", url.c_str());
 
-  WiFiClientSecure secureClient;
-  configureTls(secureClient);
-
-  HTTPClient http;
-  http.setConnectTimeout(SYNC_CONNECT_TIMEOUT);
-  http.setTimeout(SYNC_READ_TIMEOUT);
-  http.begin(secureClient, url.c_str());
-  addAuthHeaders(http, accessToken);
-
-  const int code = http.GET();
-  const String response = http.getString();
-  http.end();
-  LOG_DBG("RSYNC", "pull HTTP %d body=%u bytes", code, response.length());
-
-  if (code != 200) {
-    extractErrorMessage(response, errMsg);
-    return mapHttpStatus(code);
-  }
+  ReadestHttp::Request rq;
+  rq.tag = "RSYNC";
+  rq.url = READEST_STORE.getSyncApiBase() + "/sync?since=" + sinceBuf + "&type=configs&book=" + bookHash +
+           "&meta_hash=" + metaHash;
+  rq.headers = ReadestHttp::bearerHeaders(accessToken);
+  rq.connectTimeoutMs = SYNC_CONNECT_TIMEOUT;
+  rq.readTimeoutMs = SYNC_READ_TIMEOUT;
 
   JsonDocument doc;
-  const auto err = deserializeJson(doc, response.c_str(), response.length());
-  if (err) {
-    LOG_ERR("RSYNC", "pull JSON parse: %s", err.c_str());
-    return JSON_ERROR;
-  }
+  const int code = ReadestHttp::requestJson(rq, &doc, errMsg);
+  if (code == ReadestHttp::JSON_PARSE_FAILED) return JSON_ERROR;
+  if (code != 200) return mapHttpStatus(code);
 
   // Server filter unions book_hash and meta_hash matches (spec §5.3: a row
   // stored under a byte-different file of the same conceptual book matches
@@ -142,9 +108,6 @@ ReadestSyncClient::Error ReadestSyncClient::pushConfig(const BookConfig& cfg, Bo
     return NO_AUTH;
   }
 
-  const std::string url = READEST_STORE.getSyncApiBase() + "/sync";
-  LOG_DBG("RSYNC", "push: %s", url.c_str());
-
   JsonDocument req;
   JsonArray configs = req["configs"].to<JsonArray>();
   JsonObject c = configs.add<JsonObject>();
@@ -160,32 +123,18 @@ ReadestSyncClient::Error ReadestSyncClient::pushConfig(const BookConfig& cfg, Bo
   std::string body;
   serializeJson(req, body);
 
-  WiFiClientSecure secureClient;
-  configureTls(secureClient);
-
-  HTTPClient http;
-  http.setConnectTimeout(SYNC_CONNECT_TIMEOUT);
-  http.setTimeout(SYNC_READ_TIMEOUT);
-  http.begin(secureClient, url.c_str());
-  addAuthHeaders(http, accessToken);
-  http.addHeader("Content-Type", "application/json");
-
-  const int code = http.POST(body.c_str());
-  const String response = http.getString();
-  http.end();
-  LOG_DBG("RSYNC", "push HTTP %d body=%u bytes", code, response.length());
-
-  if (code != 200) {
-    extractErrorMessage(response, errMsg);
-    return mapHttpStatus(code);
-  }
+  ReadestHttp::Request rq;
+  rq.tag = "RSYNC";
+  rq.url = READEST_STORE.getSyncApiBase() + "/sync";
+  rq.headers = ReadestHttp::bearerHeaders(accessToken);
+  rq.body = &body;
+  rq.connectTimeoutMs = SYNC_CONNECT_TIMEOUT;
+  rq.readTimeoutMs = SYNC_READ_TIMEOUT;
 
   JsonDocument doc;
-  const auto err = deserializeJson(doc, response.c_str(), response.length());
-  if (err) {
-    LOG_ERR("RSYNC", "push JSON parse: %s", err.c_str());
-    return JSON_ERROR;
-  }
+  const int code = ReadestHttp::requestJson(rq, &doc, errMsg);
+  if (code == ReadestHttp::JSON_PARSE_FAILED) return JSON_ERROR;
+  if (code != 200) return mapHttpStatus(code);
 
   if (outAuthoritative) {
     for (JsonObjectConst row : doc["configs"].as<JsonArrayConst>()) {

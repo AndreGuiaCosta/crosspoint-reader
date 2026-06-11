@@ -1,14 +1,10 @@
 #include "ReadestAuthClient.h"
 
 #include <ArduinoJson.h>
-#include <HTTPClient.h>
 #include <Logging.h>
-#include <ReadestTlsConfig.h>
-#include <WiFiClientSecure.h>
-
-#include <memory>
 
 #include "ReadestAccountStore.h"
+#include "ReadestHttp.h"
 
 namespace {
 // Timeouts in milliseconds.
@@ -18,23 +14,6 @@ constexpr int REFRESH_CONNECT_TIMEOUT = 3000;
 constexpr int REFRESH_READ_TIMEOUT = 7000;
 constexpr int LOGOUT_CONNECT_TIMEOUT = 3000;
 constexpr int LOGOUT_READ_TIMEOUT = 7000;
-
-void configureTls(WiFiClientSecure& client) { ReadestTls::configure(client); }
-
-// Pull `error_description` (preferred) or `msg` from a Supabase error body.
-//
-// Pass length explicitly to deserializeJson — the simulator's String lookalike
-// has no dedicated ArduinoJson reader, and the auto-detected one stops short
-// of the full payload.
-void extractErrorMessage(const String& body, std::string* errMsg) {
-  if (!errMsg) return;
-  JsonDocument doc;
-  if (deserializeJson(doc, body.c_str(), body.length()) != DeserializationError::Ok) return;
-  std::string msg = doc["error_description"] | std::string("");
-  if (msg.empty()) msg = doc["msg"] | std::string("");
-  if (msg.empty()) msg = doc["error"] | std::string("");
-  if (!msg.empty()) *errMsg = std::move(msg);
-}
 
 ReadestAuthClient::Error mapHttpStatus(int code) {
   using E = ReadestAuthClient::Error;
@@ -64,6 +43,39 @@ bool applyTokenResponse(const JsonDocument& doc) {
   READEST_STORE.setSession(userEmail, userId, accessToken, refreshToken, expiresAt);
   return true;
 }
+
+// Shared POST /auth/v1/token flow; signIn and refresh differ only in
+// grant_type, request body, and timeouts.
+ReadestAuthClient::Error tokenRequest(const char* grantType, const JsonDocument& reqBody, int connectTimeoutMs,
+                                      int readTimeoutMs, std::string* errMsg) {
+  const std::string anonKey = READEST_STORE.getSupabaseAnonKey();
+  if (anonKey.empty()) {
+    LOG_ERR("RAUTH", "%s: anon key unavailable", grantType);
+    return ReadestAuthClient::NO_ANON_KEY;
+  }
+
+  std::string body;
+  serializeJson(reqBody, body);
+
+  ReadestHttp::Request rq;
+  rq.tag = "RAUTH";
+  rq.url = READEST_STORE.getSupabaseUrl() + "/auth/v1/token?grant_type=" + grantType;
+  rq.headers = {{"apikey", anonKey}, {"Accept", "application/json"}};
+  rq.body = &body;
+  rq.connectTimeoutMs = connectTimeoutMs;
+  rq.readTimeoutMs = readTimeoutMs;
+
+  JsonDocument resp;
+  const int code = ReadestHttp::requestJson(rq, &resp, errMsg);
+  if (code == ReadestHttp::JSON_PARSE_FAILED) return ReadestAuthClient::JSON_ERROR;
+  // Don't clear tokens on 4xx; caller decides whether to prompt sign-in.
+  if (code != 200) return mapHttpStatus(code);
+
+  if (!applyTokenResponse(resp)) {
+    return ReadestAuthClient::JSON_ERROR;
+  }
+  return ReadestAuthClient::OK;
+}
 }  // namespace
 
 ReadestAuthClient::Error ReadestAuthClient::signIn(const std::string& email, const std::string& password,
@@ -72,52 +84,11 @@ ReadestAuthClient::Error ReadestAuthClient::signIn(const std::string& email, con
     LOG_DBG("RAUTH", "signIn: empty email or password");
     return NO_CREDENTIALS;
   }
-  const std::string anonKey = READEST_STORE.getSupabaseAnonKey();
-  if (anonKey.empty()) {
-    LOG_ERR("RAUTH", "signIn: anon key unavailable");
-    return NO_ANON_KEY;
-  }
-
-  const std::string url = READEST_STORE.getSupabaseUrl() + "/auth/v1/token?grant_type=password";
-  LOG_DBG("RAUTH", "signIn: %s", url.c_str());
-
-  WiFiClientSecure secureClient;
-  configureTls(secureClient);
-
-  HTTPClient http;
-  http.setConnectTimeout(SIGN_IN_CONNECT_TIMEOUT);
-  http.setTimeout(SIGN_IN_READ_TIMEOUT);
-  http.begin(secureClient, url.c_str());
-  http.addHeader("apikey", anonKey.c_str());
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Accept", "application/json");
 
   JsonDocument req;
   req["email"] = email;
   req["password"] = password;
-  std::string body;
-  serializeJson(req, body);
-
-  const int code = http.POST(body.c_str());
-  const String response = http.getString();
-  http.end();
-  LOG_DBG("RAUTH", "signIn HTTP %d", code);
-
-  if (code != 200) {
-    extractErrorMessage(response, errMsg);
-    return mapHttpStatus(code);
-  }
-
-  JsonDocument resp;
-  const auto err = deserializeJson(resp, response.c_str(), response.length());
-  if (err) {
-    LOG_ERR("RAUTH", "signIn JSON parse: %s", err.c_str());
-    return JSON_ERROR;
-  }
-  if (!applyTokenResponse(resp)) {
-    return JSON_ERROR;
-  }
-  return OK;
+  return tokenRequest("password", req, SIGN_IN_CONNECT_TIMEOUT, SIGN_IN_READ_TIMEOUT, errMsg);
 }
 
 ReadestAuthClient::Error ReadestAuthClient::refresh(std::string* errMsg) {
@@ -126,51 +97,10 @@ ReadestAuthClient::Error ReadestAuthClient::refresh(std::string* errMsg) {
     LOG_DBG("RAUTH", "refresh: no refresh_token in store");
     return NO_CREDENTIALS;
   }
-  const std::string anonKey = READEST_STORE.getSupabaseAnonKey();
-  if (anonKey.empty()) {
-    return NO_ANON_KEY;
-  }
-
-  const std::string url = READEST_STORE.getSupabaseUrl() + "/auth/v1/token?grant_type=refresh_token";
-  LOG_DBG("RAUTH", "refresh: %s", url.c_str());
-
-  WiFiClientSecure secureClient;
-  configureTls(secureClient);
-
-  HTTPClient http;
-  http.setConnectTimeout(REFRESH_CONNECT_TIMEOUT);
-  http.setTimeout(REFRESH_READ_TIMEOUT);
-  http.begin(secureClient, url.c_str());
-  http.addHeader("apikey", anonKey.c_str());
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Accept", "application/json");
 
   JsonDocument req;
   req["refresh_token"] = refreshToken;
-  std::string body;
-  serializeJson(req, body);
-
-  const int code = http.POST(body.c_str());
-  const String response = http.getString();
-  http.end();
-  LOG_DBG("RAUTH", "refresh HTTP %d", code);
-
-  if (code != 200) {
-    extractErrorMessage(response, errMsg);
-    // Don't clear tokens on 4xx; caller decides whether to prompt sign-in.
-    return mapHttpStatus(code);
-  }
-
-  JsonDocument resp;
-  const auto err = deserializeJson(resp, response.c_str(), response.length());
-  if (err) {
-    LOG_ERR("RAUTH", "refresh JSON parse: %s", err.c_str());
-    return JSON_ERROR;
-  }
-  if (!applyTokenResponse(resp)) {
-    return JSON_ERROR;
-  }
-  return OK;
+  return tokenRequest("refresh_token", req, REFRESH_CONNECT_TIMEOUT, REFRESH_READ_TIMEOUT, errMsg);
 }
 
 ReadestAuthClient::Error ReadestAuthClient::signOut() {
@@ -182,22 +112,17 @@ ReadestAuthClient::Error ReadestAuthClient::signOut() {
   }
   const std::string anonKey = READEST_STORE.getSupabaseAnonKey();
 
-  const std::string url = READEST_STORE.getSupabaseUrl() + "/auth/v1/logout";
-  LOG_DBG("RAUTH", "signOut: %s", url.c_str());
+  ReadestHttp::Request rq;
+  rq.tag = "RAUTH";
+  rq.url = READEST_STORE.getSupabaseUrl() + "/auth/v1/logout";
+  rq.headers = ReadestHttp::bearerHeaders(accessToken);
+  if (!anonKey.empty()) rq.headers.emplace_back("apikey", anonKey);
+  const std::string emptyBody;
+  rq.body = &emptyBody;
+  rq.connectTimeoutMs = LOGOUT_CONNECT_TIMEOUT;
+  rq.readTimeoutMs = LOGOUT_READ_TIMEOUT;
 
-  WiFiClientSecure secureClient;
-  configureTls(secureClient);
-
-  HTTPClient http;
-  http.setConnectTimeout(LOGOUT_CONNECT_TIMEOUT);
-  http.setTimeout(LOGOUT_READ_TIMEOUT);
-  http.begin(secureClient, url.c_str());
-  if (!anonKey.empty()) http.addHeader("apikey", anonKey.c_str());
-  http.addHeader("Authorization", (std::string("Bearer ") + accessToken).c_str());
-
-  const int code = http.POST("");
-  http.end();
-  LOG_DBG("RAUTH", "signOut HTTP %d", code);
+  const int code = ReadestHttp::requestJson(rq, nullptr, nullptr);
 
   // Always clear local session; HTTP outcome shouldn't strand the user.
   READEST_STORE.clearSession();

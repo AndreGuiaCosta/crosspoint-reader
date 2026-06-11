@@ -1,12 +1,12 @@
 #include "ReadestStorageClient.h"
 
 #include <ArduinoJson.h>
-#include <HTTPClient.h>
 #include <Logging.h>
-#include <ReadestTlsConfig.h>
-#include <WiFiClientSecure.h>
+
+#include <cstdio>
 
 #include "ReadestAccountStore.h"
+#include "ReadestHttp.h"
 #include "ReadestTimeUtils.h"
 
 namespace {
@@ -14,13 +14,6 @@ constexpr int STORAGE_CONNECT_TIMEOUT = 5000;
 constexpr int STORAGE_READ_TIMEOUT = 10000;
 
 constexpr char DUMMY_BOOK_HASH[] = "00000000000000000000000000000000";
-
-void configureTls(WiFiClientSecure& client) { ReadestTls::configure(client); }
-
-void addAuthHeaders(HTTPClient& http, const std::string& accessToken) {
-  http.addHeader("Authorization", (std::string("Bearer ") + accessToken).c_str());
-  http.addHeader("Accept", "application/json");
-}
 
 ReadestStorageClient::Error mapHttpStatus(int code) {
   using E = ReadestStorageClient::Error;
@@ -31,15 +24,6 @@ ReadestStorageClient::Error mapHttpStatus(int code) {
   if (code >= 500) return E::SERVER_ERROR;
   if (code < 0) return E::NETWORK_ERROR;
   return E::SERVER_ERROR;
-}
-
-void extractErrorMessage(const String& body, std::string* errMsg) {
-  if (!errMsg) return;
-  JsonDocument doc;
-  if (deserializeJson(doc, body.c_str(), body.length()) != DeserializationError::Ok) return;
-  std::string msg = doc["error"] | std::string("");
-  if (msg.empty()) msg = doc["message"] | std::string("");
-  if (!msg.empty()) *errMsg = std::move(msg);
 }
 
 void rowToBook(JsonObjectConst row, ReadestStorageClient::BookRow& out) {
@@ -86,35 +70,16 @@ ReadestStorageClient::Error ReadestStorageClient::pullBooksSince(int64_t sinceMs
 
   char sinceBuf[32];
   std::snprintf(sinceBuf, sizeof(sinceBuf), "%lld", static_cast<long long>(sinceMs));
-  const std::string url = READEST_STORE.getSyncApiBase() + "/sync?since=" + sinceBuf + "&type=books";
-  LOG_DBG("RSTOR", "books pull: %s", url.c_str());
 
-  WiFiClientSecure secureClient;
-  configureTls(secureClient);
+  ReadestHttp::Request rq;
+  rq.tag = "RSTOR";
+  rq.url = READEST_STORE.getSyncApiBase() + "/sync?since=" + sinceBuf + "&type=books";
+  rq.headers = ReadestHttp::bearerHeaders(accessToken);
+  rq.connectTimeoutMs = STORAGE_CONNECT_TIMEOUT;
+  rq.readTimeoutMs = STORAGE_READ_TIMEOUT;
 
-  HTTPClient http;
-  http.setConnectTimeout(STORAGE_CONNECT_TIMEOUT);
-  http.setTimeout(STORAGE_READ_TIMEOUT);
-  // HTTP/1.0 disables chunked transfer-encoding so the success body can be
-  // parsed straight off the socket below (getStream() does not decode chunks).
-  http.useHTTP10(true);
-  http.begin(secureClient, url.c_str());
-  addAuthHeaders(http, accessToken);
-
-  const int code = http.GET();
-  LOG_DBG("RSTOR", "books pull HTTP %d", code);
-
-  if (code != 200) {
-    const String response = http.getString();
-    http.end();
-    extractErrorMessage(response, errMsg);
-    return mapHttpStatus(code);
-  }
-
-  // A first pull (since=0) returns the entire library in one body. Parse it
-  // straight from the TLS stream with a field filter instead of buffering
-  // String + full DOM — the difference between ~1x and ~3x of the response
-  // size in peak heap on a ~200KB-free ESP32-C3.
+  // A first pull (since=0) returns the entire library in one body; the filter
+  // bounds the parsed document to the fields rowToBook reads.
   JsonDocument filter;
   JsonObject f = filter["books"].add<JsonObject>();
   f["book_hash"] = true;
@@ -127,14 +92,12 @@ ReadestStorageClient::Error ReadestStorageClient::pullBooksSince(int64_t sinceMs
   f["uploaded_at"] = true;
   f["updated_at"] = true;
   f["deleted_at"] = true;
+  rq.filter = &filter;
 
   JsonDocument doc;
-  const auto err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-  http.end();
-  if (err) {
-    LOG_ERR("RSTOR", "books pull JSON parse: %s", err.c_str());
-    return JSON_ERROR;
-  }
+  const int code = ReadestHttp::requestJson(rq, &doc, errMsg);
+  if (code == ReadestHttp::JSON_PARSE_FAILED) return JSON_ERROR;
+  if (code != 200) return mapHttpStatus(code);
 
   if (out) out->reserve(doc["books"].as<JsonArrayConst>().size());
   for (JsonObjectConst row : doc["books"].as<JsonArrayConst>()) {
@@ -159,34 +122,17 @@ ReadestStorageClient::Error ReadestStorageClient::listFilesByBookHash(const std:
     return NO_AUTH;
   }
 
-  const std::string url = READEST_STORE.getSyncApiBase() + "/storage/list?bookHash=" + bookHash;
-  LOG_DBG("RSTOR", "list: %s", url.c_str());
-
-  WiFiClientSecure secureClient;
-  configureTls(secureClient);
-
-  HTTPClient http;
-  http.setConnectTimeout(STORAGE_CONNECT_TIMEOUT);
-  http.setTimeout(STORAGE_READ_TIMEOUT);
-  http.begin(secureClient, url.c_str());
-  addAuthHeaders(http, accessToken);
-
-  const int code = http.GET();
-  const String response = http.getString();
-  http.end();
-  LOG_DBG("RSTOR", "list HTTP %d body=%u bytes", code, response.length());
-
-  if (code != 200) {
-    extractErrorMessage(response, errMsg);
-    return mapHttpStatus(code);
-  }
+  ReadestHttp::Request rq;
+  rq.tag = "RSTOR";
+  rq.url = READEST_STORE.getSyncApiBase() + "/storage/list?bookHash=" + bookHash;
+  rq.headers = ReadestHttp::bearerHeaders(accessToken);
+  rq.connectTimeoutMs = STORAGE_CONNECT_TIMEOUT;
+  rq.readTimeoutMs = STORAGE_READ_TIMEOUT;
 
   JsonDocument doc;
-  const auto err = deserializeJson(doc, response.c_str(), response.length());
-  if (err) {
-    LOG_ERR("RSTOR", "list JSON parse: %s", err.c_str());
-    return JSON_ERROR;
-  }
+  const int code = ReadestHttp::requestJson(rq, &doc, errMsg);
+  if (code == ReadestHttp::JSON_PARSE_FAILED) return JSON_ERROR;
+  if (code != 200) return mapHttpStatus(code);
 
   if (out) out->reserve(doc["files"].as<JsonArrayConst>().size());
   for (JsonObjectConst row : doc["files"].as<JsonArrayConst>()) {
@@ -209,41 +155,24 @@ ReadestStorageClient::Error ReadestStorageClient::getDownloadUrls(const std::vec
     return NO_AUTH;
   }
 
-  const std::string url = READEST_STORE.getSyncApiBase() + "/storage/download";
-  LOG_DBG("RSTOR", "sign: %s (%u keys)", url.c_str(), static_cast<unsigned>(fileKeys.size()));
-
   JsonDocument req;
   JsonArray arr = req["fileKeys"].to<JsonArray>();
   for (const auto& key : fileKeys) arr.add(key);
   std::string body;
   serializeJson(req, body);
 
-  WiFiClientSecure secureClient;
-  configureTls(secureClient);
-
-  HTTPClient http;
-  http.setConnectTimeout(STORAGE_CONNECT_TIMEOUT);
-  http.setTimeout(STORAGE_READ_TIMEOUT);
-  http.begin(secureClient, url.c_str());
-  addAuthHeaders(http, accessToken);
-  http.addHeader("Content-Type", "application/json");
-
-  const int code = http.POST(body.c_str());
-  const String response = http.getString();
-  http.end();
-  LOG_DBG("RSTOR", "sign HTTP %d body=%u bytes", code, response.length());
-
-  if (code != 200) {
-    extractErrorMessage(response, errMsg);
-    return mapHttpStatus(code);
-  }
+  ReadestHttp::Request rq;
+  rq.tag = "RSTOR";
+  rq.url = READEST_STORE.getSyncApiBase() + "/storage/download";
+  rq.headers = ReadestHttp::bearerHeaders(accessToken);
+  rq.body = &body;
+  rq.connectTimeoutMs = STORAGE_CONNECT_TIMEOUT;
+  rq.readTimeoutMs = STORAGE_READ_TIMEOUT;
 
   JsonDocument doc;
-  const auto err = deserializeJson(doc, response.c_str(), response.length());
-  if (err) {
-    LOG_ERR("RSTOR", "sign JSON parse: %s", err.c_str());
-    return JSON_ERROR;
-  }
+  const int code = ReadestHttp::requestJson(rq, &doc, errMsg);
+  if (code == ReadestHttp::JSON_PARSE_FAILED) return JSON_ERROR;
+  if (code != 200) return mapHttpStatus(code);
 
   if (!outUrls) return OK;
   JsonObjectConst urls = doc["downloadUrls"].as<JsonObjectConst>();
