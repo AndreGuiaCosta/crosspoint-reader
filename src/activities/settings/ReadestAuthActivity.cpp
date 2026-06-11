@@ -73,9 +73,10 @@ void ReadestAuthActivity::onWifiSelectionComplete(const bool success) {
   }
   requestUpdate();
 
-  // The settings flow has no reader Section to shed, but a connected BLE
-  // remote holds 50-68KB — more than the TLS handshake's margin on the C3.
-  SyncActivityUtils::releaseBleForTls();
+  // Shed BLE + font caches; the TLS handshake needs the room (see
+  // SyncActivityUtils). With an SD .cpfont and no BT bonded, the glyph
+  // caches alone can hold 45-60KB after a reader session.
+  SyncActivityUtils::releaseHeapForTls(renderer);
 
   // Supabase rejects skewed clocks on token issuance.
   NtpSync::syncTime();

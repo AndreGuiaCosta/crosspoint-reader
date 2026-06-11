@@ -222,8 +222,8 @@ void ReadestLibraryActivity::showLoadingBeforeFetch() {
     LOG_ERR("RLIB", "Loading screen could not be rendered before fetch");
     requestUpdate(true);
   }
-  // A connected BLE remote holds 50-68KB; the TLS handshake needs that room.
-  SyncActivityUtils::releaseBleForTls();
+  // Shed BLE + font caches; the TLS handshake needs the room (see SyncActivityUtils).
+  SyncActivityUtils::releaseHeapForTls(renderer);
 }
 
 void ReadestLibraryActivity::fetchBooks() {

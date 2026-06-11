@@ -1,19 +1,30 @@
 #include "SyncActivityUtils.h"
 
 #include <BluetoothHIDManager.h>
+#include <FontCacheManager.h>
+#include <GfxRenderer.h>
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
 
 namespace SyncActivityUtils {
 
-void releaseBleForTls() {
+void releaseHeapForTls(GfxRenderer& renderer) {
+  LOG_INF("Sync", "Releasing heap for TLS (free before: %u)", (unsigned)ESP.getFreeHeap());
+
   auto& btMgr = BluetoothHIDManager::getInstance();
-  if (!btMgr.isEnabled()) return;
-  LOG_INF("Sync", "Disabling Bluetooth before TLS (heap before: %u)", (unsigned)ESP.getFreeHeap());
-  btMgr.disable();
-  btMgr.requestEnableLater();
-  LOG_INF("Sync", "Bluetooth released (heap after: %u)", (unsigned)ESP.getFreeHeap());
+  if (btMgr.isEnabled()) {
+    btMgr.disable();
+    btMgr.requestEnableLater();
+  }
+
+  // SD .cpfont glyph caches survive the reader session (and with no BT
+  // bonded, prewarm was eager for all styles). Glyphs reload on demand.
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->clearCache();
+  }
+
+  LOG_INF("Sync", "Heap released for TLS (free after: %u)", (unsigned)ESP.getFreeHeap());
 }
 
 void wifiOff() {
