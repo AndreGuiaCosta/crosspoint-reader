@@ -95,21 +95,42 @@ ReadestStorageClient::Error ReadestStorageClient::pullBooksSince(int64_t sinceMs
   HTTPClient http;
   http.setConnectTimeout(STORAGE_CONNECT_TIMEOUT);
   http.setTimeout(STORAGE_READ_TIMEOUT);
+  // HTTP/1.0 disables chunked transfer-encoding so the success body can be
+  // parsed straight off the socket below (getStream() does not decode chunks).
+  http.useHTTP10(true);
   http.begin(secureClient, url.c_str());
   addAuthHeaders(http, accessToken);
 
   const int code = http.GET();
-  const String response = http.getString();
-  http.end();
-  LOG_DBG("RSTOR", "books pull HTTP %d body=%u bytes", code, response.length());
+  LOG_DBG("RSTOR", "books pull HTTP %d", code);
 
   if (code != 200) {
+    const String response = http.getString();
+    http.end();
     extractErrorMessage(response, errMsg);
     return mapHttpStatus(code);
   }
 
+  // A first pull (since=0) returns the entire library in one body. Parse it
+  // straight from the TLS stream with a field filter instead of buffering
+  // String + full DOM — the difference between ~1x and ~3x of the response
+  // size in peak heap on a ~200KB-free ESP32-C3.
+  JsonDocument filter;
+  JsonObject f = filter["books"].add<JsonObject>();
+  f["book_hash"] = true;
+  f["meta_hash"] = true;
+  f["format"] = true;
+  f["title"] = true;
+  f["source_title"] = true;
+  f["author"] = true;
+  f["progress"] = true;
+  f["uploaded_at"] = true;
+  f["updated_at"] = true;
+  f["deleted_at"] = true;
+
   JsonDocument doc;
-  const auto err = deserializeJson(doc, response.c_str(), response.length());
+  const auto err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+  http.end();
   if (err) {
     LOG_ERR("RSTOR", "books pull JSON parse: %s", err.c_str());
     return JSON_ERROR;
