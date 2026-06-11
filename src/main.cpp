@@ -14,7 +14,9 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <NtpSync.h>
 #include <SPI.h>
+#include <WiFi.h>
 #include <builtinFonts/all.h>
 
 #ifdef SIMULATOR
@@ -71,8 +73,10 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "ReadestAccountStore.h"
+#include "ReadestAuthClient.h"
 #include "ReadestBookCatalog.h"
 #include "ReadestLibraryStore.h"
+#include "WifiCredentialStore.h"
 #include "CollectionsStore.h"
 #include "LibraryIndex.h"
 #include "RecentBooksStore.h"
@@ -425,6 +429,13 @@ constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
 // re-navigate to File Transfer from Home -- mirrors the path they'd
 // take by hitting Back manually but skips the trip through the menu.
 constexpr uint32_t SILENT_REBOOT_TARGET_FILE_TRANSFER = 2;
+// CrumBLE+Readest: low-heap sign-in restart. Heap-tight devices (SD-font X4:
+// ~71KB baseline) can't fit the TLS handshake next to WiFi from the settings
+// flow; the sign-in re-runs early in setup() where the heavy singletons
+// haven't loaded yet. The typed password rides along in RTC memory below —
+// survives ESP.restart(), wiped on power loss, cleared on consume.
+constexpr uint32_t SILENT_REBOOT_TARGET_READEST_AUTH = 3;
+RTC_NOINIT_ATTR char silentRebootAuthPassword[129];
 
 // How the device is coming back to life, resolved once at boot. Both resume
 // flows suppress the splash and leave the panel holding its pre-boot frame; a
@@ -493,6 +504,92 @@ void silentRestartToReader() {
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
   ESP.restart();
+}
+
+void setSilentRebootAuthPassword(const std::string& pw) {
+  const size_t n = std::min(pw.size(), sizeof(silentRebootAuthPassword) - 1);
+  memcpy(silentRebootAuthPassword, pw.data(), n);
+  silentRebootAuthPassword[n] = '\0';
+}
+
+void silentRestartToReadestAuth() {
+  if (deepSleepInProgress) return;
+  silentRebootTarget = SILENT_REBOOT_TARGET_READEST_AUTH;
+  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  LOG_DBG("MAIN", "Silent restart (target=readest-auth)");
+  // Panel retains this through the restart; the early-boot window runs the
+  // actual sign-in before the first repaint.
+  GUI.drawPopup(renderer, tr(STR_AUTHENTICATING));
+  delay(50);
+  ESP.restart();
+}
+
+// The early-boot half of silentRestartToReadestAuth(): WiFi → NTP → sign-in
+// with everything heavy still unloaded. Outcome is recorded via
+// recordSyncResult so the Readest settings screen shows it; boot then
+// continues normally to Home.
+static void runEarlyReadestAuth() {
+  // Consume the RTC password first — nothing below may retrigger a restart.
+  std::string password(silentRebootAuthPassword);
+  memset(silentRebootAuthPassword, 0, sizeof(silentRebootAuthPassword));
+
+  const std::string email = READEST_STORE.getUserEmail();
+  if (email.empty() || password.empty()) {
+    READEST_STORE.recordSyncResult(false, "Sign-in restart: missing credentials");
+    return;
+  }
+
+  LOG_INF("MAIN", "Early-boot Readest sign-in (heap: %u)", (unsigned)ESP.getFreeHeap());
+
+  WIFI_STORE.loadFromFile();
+  const std::string& lastSsid = WIFI_STORE.getLastConnectedSsid();
+  const WifiCredential* cred = nullptr;
+  for (const auto& c : WIFI_STORE.getCredentials()) {
+    if (c.ssid == lastSsid) {
+      cred = &c;
+      break;
+    }
+  }
+  if (!cred) {
+    READEST_STORE.recordSyncResult(false, "Sign-in restart: no saved WiFi network");
+    return;
+  }
+
+  WiFi.mode(WIFI_STA);
+  if (cred->password.empty()) {
+    WiFi.begin(cred->ssid.c_str());
+  } else {
+    WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
+  }
+  const unsigned long deadline = millis() + 20000;
+  while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+    delay(250);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    READEST_STORE.recordSyncResult(false, "Sign-in restart: WiFi connect failed");
+    LOG_ERR("MAIN", "Early-boot Readest sign-in: WiFi connect failed");
+  } else {
+    // Supabase rejects skewed clocks on token issuance.
+    NtpSync::syncTime();
+    std::string err;
+    const auto rc = ReadestAuthClient::signIn(email, password, &err);
+    if (rc == ReadestAuthClient::OK) {
+      READEST_STORE.recordSyncResult(true, std::string());
+      LOG_INF("MAIN", "Early-boot Readest sign-in OK (heap: %u)", (unsigned)ESP.getFreeHeap());
+    } else {
+      READEST_STORE.recordSyncResult(
+          false, err.empty() ? std::string(ReadestAuthClient::errorString(rc))
+                             : (std::string(ReadestAuthClient::errorString(rc)) + " (" + err + ")"));
+      LOG_ERR("MAIN", "Early-boot Readest sign-in failed: %s", ReadestAuthClient::errorString(rc));
+    }
+  }
+
+  std::fill(password.begin(), password.end(), '\0');
+  WiFi.disconnect(true);
+  delay(100);
+  WiFi.mode(WIFI_OFF);
+  delay(100);
 }
 
 void waitForPowerRelease() {
@@ -1000,7 +1097,7 @@ void setup() {
   // Bound the target range too — RTC_NOINIT memory is uninitialized on cold boot.
   const bool isSilentReboot = (silentRebootMagic == SILENT_REBOOT_MAGIC);
   const uint32_t snapshotTarget =
-      (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_FILE_TRANSFER) ? silentRebootTarget : 0;
+      (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_READEST_AUTH) ? silentRebootTarget : 0;
   // Snapshot the FT mode hint into a normal variable before clearing
   // RTC state, so the FT activity's onEnter can read it via
   // consumeSilentRebootFtModeHint(). Only honour it on a confirmed
@@ -1096,6 +1193,15 @@ void setup() {
   // catalog can be tens of KB for a big cloud library; ReadestLibraryActivity
   // lazy-loads them on first entry instead of pinning them from setup().
   READEST_STORE.loadFromFile();
+
+  // Pending Readest sign-in from a low-heap silent restart. Runs HERE — before
+  // fonts/UITheme/render task allocate — where the TLS handshake still fits
+  // next to WiFi on heap-tight devices. The panel keeps showing the
+  // pre-restart "Authenticating" popup for the duration; the outcome lands in
+  // the settings screen's Last Sync / Last Error rows.
+  if (isSilentReboot && snapshotTarget == SILENT_REBOOT_TARGET_READEST_AUTH) {
+    runEarlyReadestAuth();
+  }
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
