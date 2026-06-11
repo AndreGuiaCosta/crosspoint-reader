@@ -299,6 +299,8 @@ HomeMenuAction homeActionForInitialMenuItem(HomeMenuItem item) {
       return HomeMenuAction::RecentBooks;
     case HomeMenuItem::OPDS_BROWSER:
       return HomeMenuAction::OpdsBrowser;
+    case HomeMenuItem::READEST_LIBRARY:
+      return HomeMenuAction::ReadestLibrary;
     case HomeMenuItem::FILE_TRANSFER:
       return HomeMenuAction::FileTransfer;
     case HomeMenuItem::SETTINGS_MENU:
