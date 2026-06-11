@@ -36,18 +36,29 @@ bool ReadestBookCatalog::loadFromFile() {
 size_t ReadestBookCatalog::mergeDelta(const std::vector<ReadestStorageClient::BookRow>& delta, int64_t maxUpdatedAtMs) {
   if (delta.empty() && maxUpdatedAtMs <= cursorMs) return books.size();
 
-  for (const auto& row : delta) {
-    if (row.hash.empty()) continue;
-    auto it = std::find_if(books.begin(), books.end(),
-                           [&](const ReadestStorageClient::BookRow& b) { return b.hash == row.hash; });
-    if (row.deleted) {
-      if (it != books.end()) books.erase(it);
-      continue;
+  if (books.empty()) {
+    // First (full) pull — the per-row find_if below would be quadratic in
+    // library size here; an empty catalog can just take the delta wholesale.
+    books.reserve(delta.size());
+    for (const auto& row : delta) {
+      if (!row.hash.empty() && !row.deleted) books.push_back(row);
     }
-    if (it == books.end()) {
-      books.push_back(row);
-    } else {
-      *it = row;
+  } else {
+    // Incremental pulls carry only changed rows, so a linear probe per row
+    // is fine.
+    for (const auto& row : delta) {
+      if (row.hash.empty()) continue;
+      auto it = std::find_if(books.begin(), books.end(),
+                             [&](const ReadestStorageClient::BookRow& b) { return b.hash == row.hash; });
+      if (row.deleted) {
+        if (it != books.end()) books.erase(it);
+        continue;
+      }
+      if (it == books.end()) {
+        books.push_back(row);
+      } else {
+        *it = row;
+      }
     }
   }
   if (maxUpdatedAtMs > cursorMs) cursorMs = maxUpdatedAtMs;
