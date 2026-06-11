@@ -86,34 +86,25 @@ void ReadestAccountStore::setPassword(const std::string& pw) {
 }
 
 void ReadestAccountStore::setSession(const std::string& email, const std::string& userId,
-                                     const std::string& accessToken, const std::string& refreshToken, int64_t expiresAt,
-                                     int64_t expiresIn) {
+                                     const std::string& accessToken, const std::string& refreshToken,
+                                     int64_t expiresAt) {
   this->userEmail = email;
   this->userId = userId;
   this->accessToken = accessToken;
   this->refreshToken = refreshToken;
   this->expiresAt = expiresAt;
-  this->expiresIn = expiresIn;
-  LOG_DBG("RAS", "Session set: user=%s exp=%lld in=%lld", email.c_str(), static_cast<long long>(expiresAt),
-          static_cast<long long>(expiresIn));
+  LOG_DBG("RAS", "Session set: user=%s exp=%lld", email.c_str(), static_cast<long long>(expiresAt));
   saveToFile();
 }
 
 void ReadestAccountStore::clearSession() {
-  // userEmail and lastConfigsSyncAtMs are intentionally preserved so a
-  // re-sign-in skips the email keyboard step and reuses the pull cursor.
+  // userEmail is intentionally preserved so a re-sign-in skips the email
+  // keyboard step. (The books pull cursor lives in ReadestBookCatalog.)
   userId.clear();
   accessToken.clear();
   refreshToken.clear();
   expiresAt = 0;
-  expiresIn = 0;
   LOG_DBG("RAS", "Session cleared");
-  saveToFile();
-}
-
-void ReadestAccountStore::setLastConfigsSyncAtMs(int64_t ms) {
-  if (ms == lastConfigsSyncAtMs) return;
-  lastConfigsSyncAtMs = ms;
   saveToFile();
 }
 
@@ -128,16 +119,3 @@ void ReadestAccountStore::recordSyncResult(bool ok, const std::string& errMsg) {
 }
 
 bool ReadestAccountStore::hasCredentials() const { return !accessToken.empty(); }
-
-bool ReadestAccountStore::needsLogin() const {
-  // Treat imminent (<60 s) expiry the same as missing.
-  if (accessToken.empty()) return true;
-  return expiresAt < nowUnixSeconds() + 60;
-}
-
-bool ReadestAccountStore::needsRefresh() const {
-  // Refresh proactively past the half-life.
-  if (accessToken.empty() || refreshToken.empty()) return false;
-  if (expiresIn <= 0) return false;
-  return expiresAt < nowUnixSeconds() + (expiresIn / 2);
-}

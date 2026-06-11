@@ -29,8 +29,6 @@ bool saveAccount(const ReadestAccountStore& store, const char* path) {
   doc["accessToken"] = store.getAccessToken();
   doc["refreshToken"] = store.getRefreshToken();
   doc["expiresAt"] = store.getExpiresAt();
-  doc["expiresIn"] = store.getExpiresIn();
-  doc["lastConfigsSyncAtMs"] = store.getLastConfigsSyncAtMs();
   doc["lastSyncAtMs"] = store.getLastSyncAtMs();
   doc["lastSyncError"] = store.getLastSyncError();
 
@@ -62,8 +60,6 @@ bool loadAccount(ReadestAccountStore& store, const char* json) {
   store.accessToken = doc["accessToken"] | std::string("");
   store.refreshToken = doc["refreshToken"] | std::string("");
   store.expiresAt = doc["expiresAt"] | static_cast<int64_t>(0);
-  store.expiresIn = doc["expiresIn"] | static_cast<int64_t>(0);
-  store.lastConfigsSyncAtMs = doc["lastConfigsSyncAtMs"] | static_cast<int64_t>(0);
   store.lastSyncAtMs = doc["lastSyncAtMs"] | static_cast<int64_t>(0);
   store.lastSyncError = doc["lastSyncError"] | std::string("");
 

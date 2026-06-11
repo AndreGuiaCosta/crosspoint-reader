@@ -2,7 +2,6 @@
 #include <Epub.h>
 
 #include <memory>
-#include <optional>
 #include <string>
 
 #include "ReadestProgressMapper.h"
@@ -21,14 +20,12 @@ class ReadestSyncActivity final : public Activity {
  public:
   explicit ReadestSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& epubPath,
                                int currentSpineIndex, int currentPage, int totalPagesInSpine, std::string bookHash,
-                               std::string metaHash, ReadestPosition localReadest, std::string localChapterName,
-                               std::optional<uint16_t> currentParagraphIndex = std::nullopt)
+                               std::string metaHash, ReadestPosition localReadest, std::string localChapterName)
       : Activity("ReadestSync", renderer, mappedInput),
         epubPath(epubPath),
         currentSpineIndex(currentSpineIndex),
         currentPage(currentPage),
         totalPagesInSpine(totalPagesInSpine),
-        currentParagraphIndex(currentParagraphIndex),
         bookHash(std::move(bookHash)),
         metaHash(std::move(metaHash)),
         localReadest(std::move(localReadest)),
@@ -38,12 +35,11 @@ class ReadestSyncActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool preventAutoSleep() override { return state == CONNECTING || state == SYNCING || state == UPLOADING; }
+  bool preventAutoSleep() override { return state == SYNCING || state == UPLOADING; }
 
  private:
   enum State {
     WIFI_SELECTION,
-    CONNECTING,
     SYNCING,
     SHOWING_RESULT,
     UPLOADING,
@@ -58,7 +54,6 @@ class ReadestSyncActivity final : public Activity {
   int currentSpineIndex;
   int currentPage;
   int totalPagesInSpine;
-  std::optional<uint16_t> currentParagraphIndex;
 
   std::string bookHash;
   std::string metaHash;
@@ -72,7 +67,6 @@ class ReadestSyncActivity final : public Activity {
   bool wifiActivated = false;
 
   // Remote state — populated after a successful pull.
-  bool hasRemote = false;
   ReadestSyncClient::BookConfig remoteConfig;
   CrossPointPosition remotePosition;
   std::string remoteChapterName;
