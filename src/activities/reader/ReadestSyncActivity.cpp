@@ -89,6 +89,19 @@ void ReadestSyncActivity::onWifiSelectionComplete(const bool success) {
 }
 
 void ReadestSyncActivity::performSync() {
+  // Hash computation can fail (SD error, unparseable OPF) and returns "".
+  // Abort like KOReaderSyncActivity does rather than querying — and worse,
+  // uploading — rows keyed by an empty hash no client could ever match.
+  if (bookHash.empty() || metaHash.empty()) {
+    {
+      RenderLock lock(*this);
+      state = SYNC_FAILED;
+      statusMessage = tr(STR_HASH_FAILED);
+    }
+    requestUpdate(true);
+    return;
+  }
+
   {
     RenderLock lock(*this);
     statusMessage = tr(STR_FETCH_PROGRESS);
@@ -110,8 +123,10 @@ void ReadestSyncActivity::performSync() {
     return;
   }
 
-  // Empty bookHash means the server returned no row matching ours.
-  if (pulled.bookHash.empty()) {
+  // Empty bookHash means the server returned no row matching ours. A row
+  // with deleted_at set is a tombstone (spec: do not treat as state) — its
+  // xpointer may be nulled and would map to the start of the book.
+  if (pulled.bookHash.empty() || pulled.deleted) {
     RenderLock lock(*this);
     state = NO_REMOTE_PROGRESS;
     hasRemote = false;
