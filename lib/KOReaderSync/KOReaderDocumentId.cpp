@@ -74,13 +74,14 @@ std::string KOReaderDocumentId::calculate(const std::string& filePath) {
       continue;
     }
 
-    // Read up to CHUNK_SIZE bytes
+    // Read up to CHUNK_SIZE bytes. read() returns a signed int (-1 on I/O
+    // error); keep it signed so an error can't wrap to SIZE_MAX in md5.add.
     const size_t bytesToRead = std::min(CHUNK_SIZE, fileSize - offset);
-    const size_t bytesRead = file.read(buffer, bytesToRead);
+    const int bytesRead = file.read(buffer, bytesToRead);
 
     if (bytesRead > 0) {
-      md5.add(buffer, bytesRead);
-      totalBytesRead += bytesRead;
+      md5.add(buffer, static_cast<size_t>(bytesRead));
+      totalBytesRead += static_cast<size_t>(bytesRead);
     }
   }
 
