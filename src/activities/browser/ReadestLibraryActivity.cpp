@@ -51,6 +51,15 @@ bool isEpubFormat(std::string format) {
 void ReadestLibraryActivity::onEnter() {
   Activity::onEnter();
 
+  // Lazy-load (once per boot) — see main.cpp: keeps the catalog off the boot
+  // path and out of resident heap for users who never open this screen.
+  static bool storesLoaded = false;
+  if (!storesLoaded) {
+    READEST_LIB_STORE.loadFromFile();
+    READEST_CATALOG.loadFromFile();
+    storesLoaded = true;
+  }
+
   state = State::CHECK_WIFI;
   books.clear();
   selectorIndex = 0;
@@ -110,8 +119,8 @@ void ReadestLibraryActivity::loop() {
       if (!mappedInput.isPressed(MappedInputManager::Button::Back)) consumeNextBackRelease = false;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      if (!books.empty() && !READEST_LIB_STORE.hasLocalCopy(books[selectorIndex].hash)) {
-        downloadBook(books[selectorIndex]);
+      if (!books.empty() && !READEST_LIB_STORE.hasLocalCopy(bookAt(selectorIndex).hash)) {
+        downloadBook(bookAt(selectorIndex));
       }
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       onGoHome();
@@ -174,7 +183,7 @@ void ReadestLibraryActivity::render(RenderLock&&) {
     return;
   }
 
-  const bool selectedDownloaded = !books.empty() && READEST_LIB_STORE.hasLocalCopy(books[selectorIndex].hash);
+  const bool selectedDownloaded = !books.empty() && READEST_LIB_STORE.hasLocalCopy(bookAt(selectorIndex).hash);
   const char* confirmLabel = selectedDownloaded ? "" : tr(STR_DOWNLOAD);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -189,7 +198,7 @@ void ReadestLibraryActivity::render(RenderLock&&) {
     const int downloadedSuffixWidth = renderer.getTextWidth(UI_10_FONT_ID, downloadedSuffix);
 
     for (size_t i = pageStartIndex; i < books.size() && i < static_cast<size_t>(pageStartIndex + PAGE_ITEMS); i++) {
-      const auto& book = books[i];
+      const auto& book = bookAt(i);
       const int rowY = ROW_LIST_TOP + (i % PAGE_ITEMS) * ROW_HEIGHT;
       const bool inverted = i != static_cast<size_t>(selectorIndex);
       const bool isDownloaded = READEST_LIB_STORE.hasLocalCopy(book.hash);
@@ -244,10 +253,12 @@ void ReadestLibraryActivity::fetchBooks() {
   }
 
   books.clear();
-  books.reserve(READEST_CATALOG.getBooks().size());
-  for (const auto& row : READEST_CATALOG.getBooks()) {
+  const auto& rows = READEST_CATALOG.getBooks();
+  books.reserve(rows.size());
+  for (size_t i = 0; i < rows.size() && i <= UINT16_MAX; ++i) {
+    const auto& row = rows[i];
     if (row.uploadedAtMs > 0 && !row.hash.empty() && isEpubFormat(row.format)) {
-      books.push_back(row);
+      books.push_back(static_cast<uint16_t>(i));
     }
   }
 
