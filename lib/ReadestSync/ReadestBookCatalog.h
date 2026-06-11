@@ -6,10 +6,10 @@
 #include "ReadestStorageClient.h"
 
 class ReadestBookCatalog;
-namespace JsonSettingsIO {
-bool saveReadestCatalog(const ReadestBookCatalog& cat, const char* path);
-bool loadReadestCatalog(ReadestBookCatalog& cat, const char* json);
-}  // namespace JsonSettingsIO
+namespace ReadestJsonIO {
+bool saveCatalog(const ReadestBookCatalog& cat, const char* path);
+bool loadCatalog(ReadestBookCatalog& cat, const char* json);
+}  // namespace ReadestJsonIO
 
 class ReadestBookCatalog {
  private:
@@ -20,8 +20,8 @@ class ReadestBookCatalog {
 
   ReadestBookCatalog() = default;
 
-  friend bool JsonSettingsIO::saveReadestCatalog(const ReadestBookCatalog&, const char*);
-  friend bool JsonSettingsIO::loadReadestCatalog(ReadestBookCatalog&, const char*);
+  friend bool ReadestJsonIO::saveCatalog(const ReadestBookCatalog&, const char*);
+  friend bool ReadestJsonIO::loadCatalog(ReadestBookCatalog&, const char*);
 
  public:
   ReadestBookCatalog(const ReadestBookCatalog&) = delete;

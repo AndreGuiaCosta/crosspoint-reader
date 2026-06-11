@@ -3,10 +3,10 @@
 #include <string>
 
 class ReadestLibraryStore;
-namespace JsonSettingsIO {
-bool saveReadestLibrary(const ReadestLibraryStore& store, const char* path);
-bool loadReadestLibrary(ReadestLibraryStore& store, const char* json);
-}  // namespace JsonSettingsIO
+namespace ReadestJsonIO {
+bool saveLibrary(const ReadestLibraryStore& store, const char* path);
+bool loadLibrary(ReadestLibraryStore& store, const char* json);
+}  // namespace ReadestJsonIO
 
 class ReadestLibraryStore {
  private:
@@ -15,8 +15,8 @@ class ReadestLibraryStore {
 
   ReadestLibraryStore() = default;
 
-  friend bool JsonSettingsIO::saveReadestLibrary(const ReadestLibraryStore&, const char*);
-  friend bool JsonSettingsIO::loadReadestLibrary(ReadestLibraryStore&, const char*);
+  friend bool ReadestJsonIO::saveLibrary(const ReadestLibraryStore&, const char*);
+  friend bool ReadestJsonIO::loadLibrary(ReadestLibraryStore&, const char*);
 
  public:
   ReadestLibraryStore(const ReadestLibraryStore&) = delete;
