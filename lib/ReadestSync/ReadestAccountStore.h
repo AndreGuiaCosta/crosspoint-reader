@@ -3,10 +3,10 @@
 #include <string>
 
 class ReadestAccountStore;
-namespace JsonSettingsIO {
-bool saveReadest(const ReadestAccountStore& store, const char* path);
-bool loadReadest(ReadestAccountStore& store, const char* json);
-}  // namespace JsonSettingsIO
+namespace ReadestJsonIO {
+bool saveAccount(const ReadestAccountStore& store, const char* path);
+bool loadAccount(ReadestAccountStore& store, const char* json);
+}  // namespace ReadestJsonIO
 
 // Single-account credential + endpoint store for Readest Sync. Persists
 // as plain JSON to /.crosspoint/readest.json.
@@ -43,8 +43,8 @@ class ReadestAccountStore {
 
   ReadestAccountStore() = default;
 
-  friend bool JsonSettingsIO::saveReadest(const ReadestAccountStore&, const char*);
-  friend bool JsonSettingsIO::loadReadest(ReadestAccountStore&, const char*);
+  friend bool ReadestJsonIO::saveAccount(const ReadestAccountStore&, const char*);
+  friend bool ReadestJsonIO::loadAccount(ReadestAccountStore&, const char*);
 
  public:
   ReadestAccountStore(const ReadestAccountStore&) = delete;

@@ -3,7 +3,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
-#include "../../src/JsonSettingsIO.h"
+#include "ReadestJsonIO.h"
 
 namespace {
 constexpr char LIBRARY_FILE_JSON[] = "/.crosspoint/readest_library.json";
@@ -13,7 +13,7 @@ ReadestLibraryStore ReadestLibraryStore::instance;
 
 bool ReadestLibraryStore::saveToFile() const {
   Storage.mkdir("/.crosspoint");
-  return JsonSettingsIO::saveReadestLibrary(*this, LIBRARY_FILE_JSON);
+  return ReadestJsonIO::saveLibrary(*this, LIBRARY_FILE_JSON);
 }
 
 bool ReadestLibraryStore::loadFromFile() {
@@ -27,7 +27,7 @@ bool ReadestLibraryStore::loadFromFile() {
     LOG_ERR("RLS", "readest_library.json present but empty");
     return false;
   }
-  if (!JsonSettingsIO::loadReadestLibrary(*this, json.c_str())) return false;
+  if (!ReadestJsonIO::loadLibrary(*this, json.c_str())) return false;
   if (purgeMissing() > 0) saveToFile();
   return true;
 }

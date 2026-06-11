@@ -5,7 +5,7 @@
 
 #include <algorithm>
 
-#include "../../src/JsonSettingsIO.h"
+#include "ReadestJsonIO.h"
 
 namespace {
 constexpr char CATALOG_FILE_JSON[] = "/.crosspoint/readest_catalog.json";
@@ -15,7 +15,7 @@ ReadestBookCatalog ReadestBookCatalog::instance;
 
 bool ReadestBookCatalog::saveToFile() const {
   Storage.mkdir("/.crosspoint");
-  return JsonSettingsIO::saveReadestCatalog(*this, CATALOG_FILE_JSON);
+  return ReadestJsonIO::saveCatalog(*this, CATALOG_FILE_JSON);
 }
 
 bool ReadestBookCatalog::loadFromFile() {
@@ -30,7 +30,7 @@ bool ReadestBookCatalog::loadFromFile() {
     LOG_ERR("RBC", "readest_catalog.json present but empty");
     return false;
   }
-  return JsonSettingsIO::loadReadestCatalog(*this, json.c_str());
+  return ReadestJsonIO::loadCatalog(*this, json.c_str());
 }
 
 size_t ReadestBookCatalog::mergeDelta(const std::vector<ReadestStorageClient::BookRow>& delta, int64_t maxUpdatedAtMs) {

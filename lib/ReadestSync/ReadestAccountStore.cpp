@@ -5,7 +5,7 @@
 
 #include <ctime>
 
-#include "../../src/JsonSettingsIO.h"
+#include "ReadestJsonIO.h"
 
 ReadestAccountStore ReadestAccountStore::instance;
 
@@ -28,7 +28,7 @@ int64_t nowUnixSeconds() { return static_cast<int64_t>(std::time(nullptr)); }
 
 bool ReadestAccountStore::saveToFile() const {
   Storage.mkdir("/.crosspoint");
-  return JsonSettingsIO::saveReadest(*this, ACCOUNT_FILE_JSON);
+  return ReadestJsonIO::saveAccount(*this, ACCOUNT_FILE_JSON);
 }
 
 bool ReadestAccountStore::loadFromFile() {
@@ -41,7 +41,7 @@ bool ReadestAccountStore::loadFromFile() {
     LOG_ERR("RAS", "readest.json present but empty");
     return false;
   }
-  return JsonSettingsIO::loadReadest(*this, json.c_str());
+  return ReadestJsonIO::loadAccount(*this, json.c_str());
 }
 
 std::string ReadestAccountStore::getSyncApiBase() const {
