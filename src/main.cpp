@@ -353,9 +353,10 @@ void setup() {
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
+  // Only the account store loads at boot (home-menu gate). The library map +
+  // catalog can be tens of KB for a big cloud library; ReadestLibraryActivity
+  // lazy-loads them on first entry instead of pinning them from setup().
   READEST_STORE.loadFromFile();
-  READEST_LIB_STORE.loadFromFile();
-  READEST_CATALOG.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
