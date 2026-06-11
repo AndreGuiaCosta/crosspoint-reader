@@ -192,6 +192,9 @@ class HomeActivity final : public Activity {
   bool hasReadingStats = false;
   bool hasBookmarks = false;
   bool hasOpdsServers = false;
+  // Snapshot of READEST_STORE.hasCredentials(): menu builders and
+  // getMenuItemCount must agree within a frame, so neither queries live.
+  bool hasReadestAccount = false;
   // CrumBLE: cache the focused shelf book's metadata title/author keyed by path,
   // so we only read the book's metadata when the focused book changes -- not on
   // every render. Empty title means "no metadata; fall back to filename".

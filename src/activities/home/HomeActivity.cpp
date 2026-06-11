@@ -236,7 +236,7 @@ bool ensureReusableCoverPath(RecentBook& book) {
   return true;
 }
 
-std::vector<HomeMenuEntry> buildHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks) {
+std::vector<HomeMenuEntry> buildHomeMenuItems(bool hasOpdsServers, bool hasReadestAccount, bool hasReadingStats, bool hasBookmarks) {
   std::vector<HomeMenuEntry> items = {
       {tr(STR_BROWSE_FILES), Folder, HomeMenuAction::BrowseFiles},
       {tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks},
@@ -245,7 +245,7 @@ std::vector<HomeMenuEntry> buildHomeMenuItems(bool hasOpdsServers, bool hasReadi
   if (hasOpdsServers) {
     items.push_back({tr(STR_OPDS_BROWSER), Library, HomeMenuAction::OpdsBrowser});
   }
-  if (READEST_STORE.hasCredentials()) {
+  if (hasReadestAccount) {
     items.push_back({tr(STR_READEST_LIBRARY), Library, HomeMenuAction::ReadestLibrary});
   }
   if (hasReadingStats) {
@@ -260,7 +260,7 @@ std::vector<HomeMenuEntry> buildHomeMenuItems(bool hasOpdsServers, bool hasReadi
   return items;
 }
 
-std::vector<HomeMenuEntry> buildMinimalMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks) {
+std::vector<HomeMenuEntry> buildMinimalMenuItems(bool hasOpdsServers, bool hasReadestAccount, bool hasReadingStats, bool hasBookmarks) {
   std::vector<HomeMenuEntry> items = {
       {tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks},
   };
@@ -268,7 +268,7 @@ std::vector<HomeMenuEntry> buildMinimalMenuItems(bool hasOpdsServers, bool hasRe
   if (hasOpdsServers) {
     items.push_back({tr(STR_OPDS_BROWSER), Library, HomeMenuAction::OpdsBrowser});
   }
-  if (READEST_STORE.hasCredentials()) {
+  if (hasReadestAccount) {
     items.push_back({tr(STR_READEST_LIBRARY), Library, HomeMenuAction::ReadestLibrary});
   }
   if (hasBookmarks) {
@@ -282,9 +282,9 @@ std::vector<HomeMenuEntry> buildMinimalMenuItems(bool hasOpdsServers, bool hasRe
   return items;
 }
 
-std::vector<HomeMenuEntry> buildSelectableHomeMenuItems(bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks,
+std::vector<HomeMenuEntry> buildSelectableHomeMenuItems(bool hasOpdsServers, bool hasReadestAccount, bool hasReadingStats, bool hasBookmarks,
                                                         bool includeContinueReading) {
-  auto items = buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks);
+  auto items = buildHomeMenuItems(hasOpdsServers, hasReadestAccount, hasReadingStats, hasBookmarks);
   if (includeContinueReading) {
     items.insert(items.begin(), {tr(STR_CONTINUE_READING), Book, HomeMenuAction::ContinueReading});
   }
@@ -536,7 +536,7 @@ int HomeActivity::getMenuItemCount() const {
   if (hasOpdsServers) {
     count++;
   }
-  if (READEST_STORE.hasCredentials()) {
+  if (hasReadestAccount) {
     count++;
   }
   if (hasReadingStats) {
@@ -2032,6 +2032,7 @@ void HomeActivity::onEnter() {
   RenderLock lock;
 
   hasOpdsServers = OPDS_STORE.hasServers();
+  hasReadestAccount = READEST_STORE.hasCredentials();
   const bool isCarouselTheme =
       static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) == CrossPointSettings::UI_THEME::LYRA_CAROUSEL;
 
@@ -2153,7 +2154,7 @@ void HomeActivity::onEnter() {
   if (initialMenuItem != HomeMenuItem::NONE) {
     const bool includeContinueReading = metrics.homeContinueReadingInMenu && !recentBooks.empty();
     const auto menuItems =
-        buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks, includeContinueReading);
+        buildSelectableHomeMenuItems(hasOpdsServers, hasReadestAccount, hasReadingStats, hasBookmarks, includeContinueReading);
     const int menuIndex = findMenuActionIndex(menuItems, homeActionForInitialMenuItem(initialMenuItem));
     if (menuIndex >= 0) {
       // CrumBLE #120: on Flow theme the menu icons sit AFTER both the
@@ -2414,7 +2415,7 @@ void HomeActivity::renderCarouselFrameToCurrentBuffer(int bookIdx, BookReadingSt
       dummy2, dummy3, []() { return true; }, frameStatsPtr, frameProgressPercent);
 
   const bool frameHasReadingStats = hasAnyBookStats(frameStats) || hasAnyGlobalStats(globalStats);
-  const auto menuItems = buildHomeMenuItems(hasOpdsServers, frameHasReadingStats, hasBookmarks);
+  const auto menuItems = buildHomeMenuItems(hasOpdsServers, hasReadestAccount, frameHasReadingStats, hasBookmarks);
   GUI.drawButtonMenu(
       renderer,
       Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.verticalSpacing, pageWidth,
@@ -2699,7 +2700,7 @@ void HomeActivity::loop() {
     }
 
     if (minimalMenuOpen) {
-      const auto menuItems = buildMinimalMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks);
+      const auto menuItems = buildMinimalMenuItems(hasOpdsServers, hasReadestAccount, hasReadingStats, hasBookmarks);
       const int menuCount = static_cast<int>(menuItems.size());
       if (menuCount <= 0) {
         minimalMenuOpen = false;
@@ -2838,7 +2839,7 @@ void HomeActivity::loop() {
     //     Carousel still does the two-row carousel/menu toggle.
     const int bookCount = static_cast<int>(recentBooks.size());
     const int menuItemCount =
-        static_cast<int>(buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks).size());
+        static_cast<int>(buildHomeMenuItems(hasOpdsServers, hasReadestAccount, hasReadingStats, hasBookmarks).size());
 
     // The shelf header is its own focus row (between carousel and books)
     // that appears whenever the user has at least one collection. The
@@ -3235,7 +3236,7 @@ void HomeActivity::loop() {
         shelfBookCountForLongPress = static_cast<int>(cachedShelfEntries().size());
       }
     }
-    const auto& menuItemsForLongPress = buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks);
+    const auto& menuItemsForLongPress = buildHomeMenuItems(hasOpdsServers, hasReadestAccount, hasReadingStats, hasBookmarks);
     const int menuSelectedIdxForLongPress =
         selectorIndex - getHomeMenuSelectionOffset(recentBooks) - shelfBookCountForLongPress;
     if (menuSelectedIdxForLongPress >= 0 &&
@@ -3297,7 +3298,7 @@ void HomeActivity::loop() {
       }
     }
 
-    auto menuItems = buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks);
+    auto menuItems = buildHomeMenuItems(hasOpdsServers, hasReadestAccount, hasReadingStats, hasBookmarks);
     if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
       menuItems.insert(menuItems.begin(), {tr(STR_CONTINUE_READING), Book, HomeMenuAction::ContinueReading});
     }
@@ -3398,7 +3399,7 @@ void HomeActivity::render(RenderLock&&) {
 
     if (minimalMenuOpen) {
       GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr);
-      const auto menuItems = buildMinimalMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks);
+      const auto menuItems = buildMinimalMenuItems(hasOpdsServers, hasReadestAccount, hasReadingStats, hasBookmarks);
       GUI.drawButtonMenu(
           renderer, Rect{0, metrics.homeTopPadding, pageWidth, pageHeight - metrics.homeTopPadding},
           static_cast<int>(menuItems.size()), minimalMenuIndex,
@@ -3462,7 +3463,7 @@ void HomeActivity::render(RenderLock&&) {
       GUI.drawCarouselBorder(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
                              recentBooks, centerIdx, inCarouselRow);
       if (!inCarouselRow) {
-        const auto menuItems = buildHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks);
+        const auto menuItems = buildHomeMenuItems(hasOpdsServers, hasReadestAccount, hasReadingStats, hasBookmarks);
         if (static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme) ==
             CrossPointSettings::UI_THEME::LYRA_CAROUSEL) {
           static_cast<const LyraCarouselTheme&>(GUI).drawButtonMenuSelectionOverlay(
@@ -3588,7 +3589,7 @@ void HomeActivity::render(RenderLock&&) {
     lastRenderedCoverSelectorValid = true;
   }
 
-  auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks,
+  auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadestAccount, hasReadingStats, hasBookmarks,
                                                 metrics.homeContinueReadingInMenu && !recentBooks.empty());
 
   const int menuStartY = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
