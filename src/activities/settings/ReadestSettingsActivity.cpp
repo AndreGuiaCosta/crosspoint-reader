@@ -25,10 +25,13 @@ enum MenuItem {
   ITEM_SUPABASE_URL,
   ITEM_LAST_SYNC,
   ITEM_LAST_ERROR,
+  ITEM_FREE_HEAP,
   MENU_ITEM_COUNT,
 };
 
-bool isReadOnly(int index) { return index == ITEM_LAST_SYNC || index == ITEM_LAST_ERROR; }
+bool isReadOnly(int index) {
+  return index == ITEM_LAST_SYNC || index == ITEM_LAST_ERROR || index == ITEM_FREE_HEAP;
+}
 
 const char* itemLabel(int index) {
   switch (index) {
@@ -48,6 +51,8 @@ const char* itemLabel(int index) {
       return tr(STR_READEST_LAST_SYNC);
     case ITEM_LAST_ERROR:
       return tr(STR_READEST_LAST_ERROR);
+    case ITEM_FREE_HEAP:
+      return tr(STR_READEST_FREE_HEAP);
     default:
       return "";
   }
@@ -210,6 +215,16 @@ void ReadestSettingsActivity::render(RenderLock&&) {
           case ITEM_LAST_ERROR: {
             const auto& err = READEST_STORE.getLastSyncError();
             return err.empty() ? "" : err;
+          }
+          case ITEM_FREE_HEAP: {
+            // TLS-affordability diagnostic: total free is what the pre-flight
+            // checks; max block shows fragmentation. Sampled per render —
+            // here WiFi is typically still off, so vs. the auth error's
+            // number this brackets the WiFi stack's share.
+            char buf[40];
+            std::snprintf(buf, sizeof(buf), "%uKB free, %uKB max block", (unsigned)(ESP.getFreeHeap() / 1024),
+                          (unsigned)(ESP.getMaxAllocHeap() / 1024));
+            return std::string(buf);
           }
           default:
             return "";
