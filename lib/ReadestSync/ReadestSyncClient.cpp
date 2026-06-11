@@ -107,17 +107,26 @@ ReadestSyncClient::Error ReadestSyncClient::pullConfig(int64_t sinceMs, const st
     return JSON_ERROR;
   }
 
-  // Server filter unions book and meta_hash matches; pick the matching
-  // book_hash but track maxUpdatedAtMs across all rows so the cursor
-  // advances when the match is older than a sibling row.
+  // Server filter unions book_hash and meta_hash matches (spec §5.3: a row
+  // stored under a byte-different file of the same conceptual book matches
+  // via meta_hash only). Prefer an exact book_hash row; otherwise accept the
+  // newest meta_hash row. Track maxUpdatedAtMs across all rows so the cursor
+  // advances even when the match is older than a sibling row.
   JsonArrayConst configs = doc["configs"];
+  bool haveExact = false;
   for (JsonObjectConst row : configs) {
     BookConfig parsed;
     rowToConfig(row, parsed);
     if (maxUpdatedAtMs && parsed.updatedAtMs > *maxUpdatedAtMs) {
       *maxUpdatedAtMs = parsed.updatedAtMs;
     }
-    if (out && out->bookHash.empty() && parsed.bookHash == bookHash) {
+    if (!out) continue;
+    const bool exact = !bookHash.empty() && parsed.bookHash == bookHash;
+    const bool metaOnly = !exact && !metaHash.empty() && parsed.metaHash == metaHash;
+    if (exact && !haveExact) {
+      haveExact = true;
+      *out = std::move(parsed);
+    } else if (metaOnly && !haveExact && parsed.updatedAtMs > out->updatedAtMs) {
       *out = std::move(parsed);
     }
   }
