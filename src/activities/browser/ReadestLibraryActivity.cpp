@@ -17,6 +17,7 @@
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/reader/SyncActivityUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
@@ -221,6 +222,8 @@ void ReadestLibraryActivity::showLoadingBeforeFetch() {
     LOG_ERR("RLIB", "Loading screen could not be rendered before fetch");
     requestUpdate(true);
   }
+  // A connected BLE remote holds 50-68KB; the TLS handshake needs that room.
+  SyncActivityUtils::releaseBleForTls();
 }
 
 void ReadestLibraryActivity::fetchBooks() {

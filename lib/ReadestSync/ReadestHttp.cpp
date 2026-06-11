@@ -40,7 +40,12 @@ int requestJson(const Request& req, JsonDocument* doc, std::string* errMsg) {
   if (freeHeap < MIN_HEAP_FOR_TLS) {
     LOG_ERR(req.tag, "Insufficient heap for TLS handshake: %u free (need %u)", (unsigned)freeHeap,
             (unsigned)MIN_HEAP_FOR_TLS);
-    if (errMsg) *errMsg = "Low memory for TLS";
+    // Numbers on screen — without serial access this message is the only
+    // way to see how far off the heap was.
+    if (errMsg) {
+      *errMsg = "Low memory for TLS: " + std::to_string(freeHeap / 1024) + "KB free, need " +
+                std::to_string(MIN_HEAP_FOR_TLS / 1024) + "KB";
+    }
     return LOW_HEAP;
   }
 

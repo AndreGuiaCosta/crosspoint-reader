@@ -1,10 +1,20 @@
 #include "SyncActivityUtils.h"
 
+#include <BluetoothHIDManager.h>
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
 
 namespace SyncActivityUtils {
+
+void releaseBleForTls() {
+  auto& btMgr = BluetoothHIDManager::getInstance();
+  if (!btMgr.isEnabled()) return;
+  LOG_INF("Sync", "Disabling Bluetooth before TLS (heap before: %u)", (unsigned)ESP.getFreeHeap());
+  btMgr.disable();
+  btMgr.requestEnableLater();
+  LOG_INF("Sync", "Bluetooth released (heap after: %u)", (unsigned)ESP.getFreeHeap());
+}
 
 void wifiOff() {
   if (esp_sntp_enabled()) {

@@ -10,6 +10,7 @@
 
 #include "MappedInputManager.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/reader/SyncActivityUtils.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -71,6 +72,10 @@ void ReadestAuthActivity::onWifiSelectionComplete(const bool success) {
     statusMessage = tr(STR_AUTHENTICATING);
   }
   requestUpdate();
+
+  // The settings flow has no reader Section to shed, but a connected BLE
+  // remote holds 50-68KB — more than the TLS handshake's margin on the C3.
+  SyncActivityUtils::releaseBleForTls();
 
   // Supabase rejects skewed clocks on token issuance.
   NtpSync::syncTime();

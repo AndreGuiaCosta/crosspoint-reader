@@ -62,6 +62,9 @@ void ReadestSyncActivity::onWifiSelectionComplete(const bool success) {
   }
   requestUpdate(true);
 
+  // A connected BLE remote holds 50-68KB; the TLS handshake needs that room.
+  SyncActivityUtils::releaseBleForTls();
+
   // Supabase rejects skewed clocks on token refresh.
   NtpSync::syncTime();
 
