@@ -8,8 +8,8 @@ choke on the wasm binary). This script targets the specific pair of
 output files from tools/crumble-prebake/build-wasm/.
 
 Outputs:
-  src/network/html/wasm/CrumblePrebakeJs.generated.h
-  src/network/html/wasm/CrumblePrebakeWasm.generated.h
+  src/network/html/wasm/crumblePrebakeJs.generated.h
+  src/network/html/wasm/crumblePrebakeWasm.generated.h
 
 Each header exposes a PROGMEM byte array + its gzip-compressed size,
 in the same shape as build_html.py's output so the same sendBufferGzip
