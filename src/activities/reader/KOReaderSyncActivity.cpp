@@ -5,7 +5,6 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
-#include <esp_sntp.h>
 #include <esp_wifi.h>
 
 #include <algorithm>
@@ -17,62 +16,18 @@
 #include "KOReaderDocumentId.h"
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
+#include <NtpSync.h>
+
 #include "SilentRestart.h"
+#include "SyncActivityUtils.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
-namespace {
-void syncTimeWithNTP() {
-  // Stop SNTP if already running (can't reconfigure while running)
-  if (esp_sntp_enabled()) {
-    esp_sntp_stop();
-  }
-
-  // Configure SNTP
-  esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-  esp_sntp_setservername(0, "pool.ntp.org");
-  esp_sntp_init();
-
-  // Wait for time to sync (with timeout)
-  int retry = 0;
-  const int maxRetries = 50;  // 5 seconds max
-  while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && retry < maxRetries) {
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-    retry++;
-  }
-
-  if (retry < maxRetries) {
-    LOG_DBG("KOSync", "NTP time synced");
-  } else {
-    LOG_DBG("KOSync", "NTP sync timeout, using fallback");
-  }
-}
-
-void wifiOff() {
-  if (esp_sntp_enabled()) {
-    esp_sntp_stop();
-  }
-  WiFi.disconnect(false);
-  delay(100);
-  WiFi.mode(WIFI_OFF);
-  delay(100);
-}
-}  // namespace
-
 void KOReaderSyncActivity::ensureEpubLoaded() {
   if (!epub) {
-    LOG_DBG("KOSync", "Loading epub for progress mapping (heap: %u)", (unsigned)ESP.getFreeHeap());
-    epub = std::make_shared<Epub>(epubPath, "/.crosspoint");
-    epub->setupCacheDir();
-    // Load metadata only (no CSS needed for progress mapping, don't rebuild if cache is missing).
-    if (!epub->load(false, true)) {
-      LOG_ERR("KOSync", "Failed to load epub for progress mapping");
-      epub.reset();
-      return;
-    }
-    LOG_DBG("KOSync", "Epub loaded (heap: %u)", (unsigned)ESP.getFreeHeap());
+    epub = SyncActivityUtils::loadEpubForSync(epubPath);
   }
 }
 
@@ -111,7 +66,8 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
   requestUpdate(true);
 
   // Sync time with NTP before making API requests
-  syncTimeWithNTP();
+  // Supabase-style backends reject skewed clocks; kosync benefits too.
+  NtpSync::syncTime();
 
   {
     RenderLock lock(*this);
@@ -147,7 +103,7 @@ void KOReaderSyncActivity::performSync() {
   }
   if (requestUpdateAndWait() != RequestUpdateResult::Rendered) {
     LOG_ERR("KOSync", "Fetch progress screen could not be rendered synchronously; aborting sync");
-    wifiOff();
+    SyncActivityUtils::wifiOff();
     {
       RenderLock lock(*this);
       state = SYNC_FAILED;
@@ -274,7 +230,7 @@ void KOReaderSyncActivity::performUpload() {
   }
   if (requestUpdateAndWait() != RequestUpdateResult::Rendered) {
     LOG_ERR("KOSync", "Upload progress screen could not be rendered synchronously; aborting upload");
-    wifiOff();
+    SyncActivityUtils::wifiOff();
     {
       RenderLock lock(*this);
       state = SYNC_FAILED;
@@ -293,7 +249,7 @@ void KOReaderSyncActivity::performUpload() {
   const auto result = KOReaderSyncClient::updateProgress(progress);
 
   // Drop the radio while user reads the result; full teardown happens at silent reboot.
-  wifiOff();
+  SyncActivityUtils::wifiOff();
 
   if (result != KOReaderSyncClient::OK) {
     {
