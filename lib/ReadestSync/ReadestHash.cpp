@@ -76,15 +76,17 @@ std::string ReadestHash::partialMd5(const std::string& filePath) {
       return "";
     }
 
-    const size_t bytesRead = file.read(buffer, length);
-    if (bytesRead == 0) {
-      LOG_ERR("RHSH", "Read at offset %zu returned 0 bytes", start);
+    // read() returns a signed int: -1 on I/O error. Keep it signed — stuffing
+    // it into size_t would turn -1 into SIZE_MAX and feed md5.add a wild length.
+    const int bytesRead = file.read(buffer, length);
+    if (bytesRead <= 0) {
+      LOG_ERR("RHSH", "Read at offset %zu returned %d", start, bytesRead);
       file.close();
       return "";
     }
 
-    md5.add(buffer, bytesRead);
-    totalBytesRead += bytesRead;
+    md5.add(buffer, static_cast<size_t>(bytesRead));
+    totalBytesRead += static_cast<size_t>(bytesRead);
   }
 
   file.close();
