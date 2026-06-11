@@ -67,6 +67,9 @@ class ReadestSyncActivity final : public Activity {
 
   State state = WIFI_SELECTION;
   std::string statusMessage;
+  // WiFi+TLS fragment the heap; onExit silent-restarts back into the reader
+  // when set (same recovery as KOReaderSyncActivity).
+  bool wifiActivated = false;
 
   // Remote state — populated after a successful pull.
   bool hasRemote = false;
