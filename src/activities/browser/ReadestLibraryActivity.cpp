@@ -12,6 +12,7 @@
 #include <map>
 
 #include "MappedInputManager.h"
+#include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -50,7 +51,13 @@ void ReadestLibraryActivity::onEnter() {
 
 void ReadestLibraryActivity::onExit() {
   Activity::onExit();
-  WiFi.mode(WIFI_OFF);
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    WiFi.disconnect(false);
+    delay(30);
+    // WiFi+mbedTLS teardown leaves the heap fragmented; reboot to home like
+    // OpdsBookBrowserActivity::onExit instead of returning on a frayed heap.
+    silentRestart();
+  }
 }
 
 void ReadestLibraryActivity::loop() {

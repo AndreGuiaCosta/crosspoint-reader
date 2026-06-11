@@ -17,6 +17,7 @@
 #include "Epub/Section.h"
 #include "EpubReaderUtils.h"
 #include "MappedInputManager.h"
+#include "SilentRestart.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
@@ -72,6 +73,7 @@ void ReadestSyncActivity::onWifiSelectionComplete(const bool success) {
   }
 
   LOG_DBG("RSync", "WiFi connected, starting sync");
+  wifiActivated = true;
 
   {
     RenderLock lock(*this);
@@ -228,6 +230,12 @@ void ReadestSyncActivity::onEnter() {
 void ReadestSyncActivity::onExit() {
   Activity::onExit();
   wifiOff();
+  if (wifiActivated) {
+    // WiFi+mbedTLS teardown leaves the heap fragmented; reloading the Epub
+    // on it can OOM. Reboot straight back into the reader instead (same
+    // recovery as KOReaderSyncActivity::onExit).
+    silentRestartToReader();
+  }
 }
 
 void ReadestSyncActivity::render(RenderLock&&) {
