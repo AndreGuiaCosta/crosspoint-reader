@@ -2,44 +2,29 @@
 #include <cstddef>
 #include <string>
 
+#include "../Utils/PartialMd5.h"
+
 class Epub;
 
 // Book-identification hashes for Readest Sync. Must match the Readest web
 // client bit-for-bit or the server treats books as different records.
 class ReadestHash {
  public:
-  // A contiguous byte range of the file that partialMd5 will hash.
-  struct SampleRange {
-    size_t start;
-    size_t length;
-  };
+  // Sampling lives in lib/Utils/PartialMd5 (shared with KOReaderDocumentId —
+  // both protocols specify the identical offset table). Aliases keep the
+  // host test and existing callers source-compatible.
+  using SampleRange = PartialMd5::SampleRange;
+  static constexpr size_t MAX_SAMPLES = PartialMd5::MAX_SAMPLES;
+  static constexpr size_t SAMPLE_SIZE = PartialMd5::SAMPLE_SIZE;
 
-  // Upper bound on the number of samples partialMd5 ever produces.
-  static constexpr size_t MAX_SAMPLES = 12;
-  static constexpr size_t SAMPLE_SIZE = 1024;
-
-  // Header-inline so the host test can exercise it without Arduino deps.
   static inline size_t partialMd5SampleRanges(size_t fileSize, SampleRange out[MAX_SAMPLES]) {
-    // Offsets evaluated under JS int32 shift semantics: `1024 << -2` is
-    // `1024 << 30` (overflow → 0), NOT `1024 >> 2 = 256`.
-    constexpr size_t OFFSETS[MAX_SAMPLES] = {
-        0u, 1024u, 4096u, 16384u, 65536u, 262144u, 1048576u, 4194304u, 16777216u, 67108864u, 268435456u, 1073741824u,
-    };
-    size_t count = 0;
-    for (size_t i = 0; i < MAX_SAMPLES; ++i) {
-      const size_t start = OFFSETS[i];
-      if (start >= fileSize) break;
-      const size_t remaining = fileSize - start;
-      out[count].start = start;
-      out[count].length = remaining < SAMPLE_SIZE ? remaining : SAMPLE_SIZE;
-      ++count;
-    }
-    return count;
+    return PartialMd5::sampleRanges(fileSize, out);
   }
 
   // Partial-MD5 "book_hash" of the raw file bytes; 32-char lowercase hex,
-  // or empty on read/open failure. NOT interchangeable with KOReader's
-  // partial-MD5 — different offset table and small-file behaviour.
+  // or empty on read/open failure. Same sampling as KOReader's partial-MD5;
+  // policies differ only on mid-hash read errors (Readest aborts, KOReader
+  // skips the sample).
   static std::string partialMd5(const std::string& filePath);
 
   // Metadata-MD5 "meta_hash":
