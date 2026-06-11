@@ -9,7 +9,13 @@ namespace {
 // Same rationale as KOReaderSyncClient: mbedTLS needs ~50KB of aggregate free
 // heap or the handshake dies with MBEDTLS_ERR_X509_ALLOC_FAILED. Total free,
 // not max contiguous block — the failure mode is aggregate exhaustion.
+// Overridable per build: envs compiled with mbedTLS dynamic buffers
+// (custom_sdkconfig CONFIG_MBEDTLS_DYNAMIC_BUFFER) need far less.
+#ifdef READEST_MIN_HEAP_FOR_TLS
+constexpr uint32_t MIN_HEAP_FOR_TLS = READEST_MIN_HEAP_FOR_TLS;
+#else
 constexpr uint32_t MIN_HEAP_FOR_TLS = 55000;
+#endif
 
 // Union of the error-body shapes across the Readest endpoints: Supabase auth
 // uses error_description/msg, the sync API uses error/message.
