@@ -8,7 +8,6 @@
 #include <ReadestHash.h>
 #include <ReadestSyncCoordinator.h>
 #include <WiFi.h>
-#include <esp_sntp.h>
 
 #include <cassert>
 #include <cstdio>
@@ -18,34 +17,15 @@
 #include "EpubReaderUtils.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "SyncActivityUtils.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
-namespace {
-void wifiOff() {
-  if (esp_sntp_enabled()) {
-    esp_sntp_stop();
-  }
-  WiFi.disconnect(false);
-  delay(100);
-  WiFi.mode(WIFI_OFF);
-  delay(100);
-}
-}  // namespace
-
 void ReadestSyncActivity::ensureEpubLoaded() {
   if (!epub) {
-    LOG_DBG("RSync", "Loading epub for progress mapping (heap: %u)", (unsigned)ESP.getFreeHeap());
-    epub = std::make_shared<Epub>(epubPath, "/.crosspoint");
-    epub->setupCacheDir();
-    if (!epub->load(false, true)) {
-      LOG_ERR("RSync", "Failed to load epub for progress mapping");
-      epub.reset();
-      return;
-    }
-    LOG_DBG("RSync", "Epub loaded (heap: %u)", (unsigned)ESP.getFreeHeap());
+    epub = SyncActivityUtils::loadEpubForSync(epubPath);
   }
 }
 
@@ -205,7 +185,7 @@ void ReadestSyncActivity::performUpload() {
   const auto rc = ReadestSyncCoordinator::pushConfigWithRefresh(push, &echo, &pushErr);
 
   if (rc != ReadestSyncClient::OK) {
-    wifiOff();
+    SyncActivityUtils::wifiOff();
     RenderLock lock(*this);
     state = SYNC_FAILED;
     statusMessage = pushErr.empty() ? std::string(ReadestSyncClient::errorString(rc))
@@ -214,7 +194,7 @@ void ReadestSyncActivity::performUpload() {
     return;
   }
 
-  wifiOff();
+  SyncActivityUtils::wifiOff();
   RenderLock lock(*this);
   state = UPLOAD_COMPLETE;
   requestUpdate(true);
@@ -242,7 +222,7 @@ void ReadestSyncActivity::onEnter() {
 
 void ReadestSyncActivity::onExit() {
   Activity::onExit();
-  wifiOff();
+  SyncActivityUtils::wifiOff();
   if (wifiActivated) {
     // WiFi+mbedTLS teardown leaves the heap fragmented; reloading the Epub
     // on it can OOM. Reboot straight back into the reader instead (same

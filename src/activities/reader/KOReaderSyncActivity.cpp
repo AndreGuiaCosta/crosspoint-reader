@@ -5,7 +5,6 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
-#include <esp_sntp.h>
 #include <esp_wifi.h>
 
 #include <algorithm>
@@ -17,52 +16,18 @@
 #include "KOReaderDocumentId.h"
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
+#include <NtpSync.h>
+
 #include "SilentRestart.h"
+#include "SyncActivityUtils.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
-namespace {
-void syncTimeWithNTP() {
-  // Stop SNTP if already running (can't reconfigure while running)
-  if (esp_sntp_enabled()) {
-    esp_sntp_stop();
-  }
-
-  // Configure SNTP
-  esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-  esp_sntp_setservername(0, "pool.ntp.org");
-  esp_sntp_init();
-
-  // Wait for time to sync (with timeout)
-  int retry = 0;
-  const int maxRetries = 50;  // 5 seconds max
-  while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && retry < maxRetries) {
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-    retry++;
-  }
-
-  if (retry < maxRetries) {
-    LOG_DBG("KOSync", "NTP time synced");
-  } else {
-    LOG_DBG("KOSync", "NTP sync timeout, using fallback");
-  }
-}
-}  // namespace
-
 void KOReaderSyncActivity::ensureEpubLoaded() {
   if (!epub) {
-    LOG_DBG("KOSync", "Loading epub for progress mapping (heap: %u)", (unsigned)ESP.getFreeHeap());
-    epub = std::make_shared<Epub>(epubPath, "/.crosspoint");
-    epub->setupCacheDir();
-    // Load metadata only (no CSS needed for progress mapping, don't rebuild if cache is missing).
-    if (!epub->load(false, true)) {
-      LOG_ERR("KOSync", "Failed to load epub for progress mapping");
-      epub.reset();
-      return;
-    }
-    LOG_DBG("KOSync", "Epub loaded (heap: %u)", (unsigned)ESP.getFreeHeap());
+    epub = SyncActivityUtils::loadEpubForSync(epubPath);
   }
 }
 
@@ -101,7 +66,8 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
   requestUpdate(true);
 
   // Sync time with NTP before making API requests
-  syncTimeWithNTP();
+  // Supabase-style backends reject skewed clocks; kosync benefits too.
+  NtpSync::syncTime();
 
   {
     RenderLock lock(*this);
