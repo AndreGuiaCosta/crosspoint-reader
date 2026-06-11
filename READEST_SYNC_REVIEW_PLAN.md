@@ -159,6 +159,11 @@ almost byte-identical across both branches:
     (3 TLS handshakes today, ~2-4 s each); cache the two book hashes (inside
     `ReadestHash`, keyed by path+size+mtime) instead of re-hashing + re-parsing
     the OPF on every sync invocation.
+    > DONE except two sub-items deliberately skipped: TLS connection reuse
+    > conflicts with the HTTP/1.0 streamed parse (no keep-alive under 1.0 —
+    > OOM safety won); hash caching buys nothing per-boot because the sync
+    > flow silent-restarts on exit (a persistent cache would need mtime
+    > plumbing — revisit only if sync-entry latency actually bothers anyone).
 20. **`[integration]` HomeActivity snapshot** — query
     `READEST_STORE.hasCredentials()` once per refresh into a member (like
     `hasOpdsServers`) instead of live in `buildHomeMenuItems`/
