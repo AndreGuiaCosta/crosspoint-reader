@@ -28,10 +28,14 @@ class ReadestLibraryActivity final : public Activity {
   std::string errorMessage;
   size_t downloadProgress = 0;
   size_t downloadTotal = 0;
+  // Set when a download is cancelled via Back: the release that cancelled
+  // would otherwise immediately fire again in BROWSING and exit to home.
+  bool consumeNextBackRelease = false;
 
   void checkAndConnectWifi();
   void launchWifiSelection();
   void onWifiSelectionComplete(bool connected);
+  void showLoadingBeforeFetch();
   void fetchBooks();
   void downloadBook(const ReadestStorageClient::BookRow& book);
   bool preventAutoSleep() override { return true; }

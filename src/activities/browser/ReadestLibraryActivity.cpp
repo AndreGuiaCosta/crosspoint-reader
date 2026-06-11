@@ -2,6 +2,7 @@
 
 #include <Epub.h>
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <ReadestBookCatalog.h>
@@ -9,6 +10,8 @@
 #include <ReadestStorageCoordinator.h>
 #include <WiFi.h>
 
+#include <algorithm>
+#include <cctype>
 #include <map>
 
 #include "MappedInputManager.h"
@@ -32,6 +35,16 @@ constexpr char COVER_KEY_SUFFIX[] = "/cover.png";
 bool isCoverKey(const std::string& key) {
   if (key.size() < sizeof(COVER_KEY_SUFFIX) - 1) return false;
   return key.compare(key.size() - (sizeof(COVER_KEY_SUFFIX) - 1), sizeof(COVER_KEY_SUFFIX) - 1, COVER_KEY_SUFFIX) == 0;
+}
+
+// Only EPUB opens in the reader; hide other formats rather than downloading
+// files the device can't render. Rows with an empty format (older clients
+// didn't always set it) stay visible.
+bool isEpubFormat(std::string format) {
+  if (format.empty()) return true;
+  std::transform(format.begin(), format.end(), format.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return format == "epub";
 }
 }  // namespace
 
@@ -67,9 +80,7 @@ void ReadestLibraryActivity::loop() {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       // Status-only — sim's IPAddress::operator!= always returns false.
       if (WiFi.status() == WL_CONNECTED) {
-        state = State::LOADING;
-        statusMessage = tr(STR_LOADING);
-        requestUpdate();
+        showLoadingBeforeFetch();
         fetchBooks();
       } else {
         launchWifiSelection();
@@ -90,6 +101,14 @@ void ReadestLibraryActivity::loop() {
   if (state == State::DOWNLOADING) return;
 
   if (state == State::BROWSING) {
+    if (consumeNextBackRelease) {
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        consumeNextBackRelease = false;
+        return;
+      }
+      // Release already consumed by the in-download input polling.
+      if (!mappedInput.isPressed(MappedInputManager::Button::Back)) consumeNextBackRelease = false;
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (!books.empty() && !READEST_LIB_STORE.hasLocalCopy(books[selectorIndex].hash)) {
         downloadBook(books[selectorIndex]);
@@ -191,6 +210,18 @@ void ReadestLibraryActivity::render(RenderLock&&) {
   renderer.displayBuffer();
 }
 
+void ReadestLibraryActivity::showLoadingBeforeFetch() {
+  // fetchBooks() blocks on TLS for seconds; requestUpdate() alone only sets a
+  // flag that is flushed after we return, so the Loading screen would never
+  // paint (same fix as OpdsBookBrowserActivity::showLoadingBeforeFetch).
+  state = State::LOADING;
+  statusMessage = tr(STR_LOADING);
+  if (requestUpdateAndWait() != RequestUpdateResult::Rendered) {
+    LOG_ERR("RLIB", "Loading screen could not be rendered before fetch");
+    requestUpdate(true);
+  }
+}
+
 void ReadestLibraryActivity::fetchBooks() {
   std::string err;
   std::vector<ReadestStorageClient::BookRow> delta;
@@ -218,7 +249,7 @@ void ReadestLibraryActivity::fetchBooks() {
   books.clear();
   books.reserve(READEST_CATALOG.getBooks().size());
   for (const auto& row : READEST_CATALOG.getBooks()) {
-    if (row.uploadedAtMs > 0 && !row.hash.empty()) {
+    if (row.uploadedAtMs > 0 && !row.hash.empty() && isEpubFormat(row.format)) {
       books.push_back(row);
     }
   }
@@ -280,20 +311,50 @@ void ReadestLibraryActivity::downloadBook(const ReadestStorageClient::BookRow& b
     return;
   }
 
-  const std::string filename =
-      "/" + StringUtils::sanitizeFilename(book.title + (book.author.empty() ? "" : " - " + book.author)) + ".epub";
+  // Trust the storage key for the on-disk extension — a hardcoded ".epub"
+  // would record files the reader can't open under a lying name.
+  std::string ext = ".epub";
+  const size_t dot = bookKey.rfind('.');
+  if (dot != std::string::npos && dot > bookKey.rfind('/') && bookKey.size() - dot <= 6) {
+    ext = bookKey.substr(dot);
+  }
+
+  const std::string baseName =
+      "/" + StringUtils::sanitizeFilename(book.title + (book.author.empty() ? "" : " - " + book.author));
+  std::string filename = baseName + ext;
+  if (Storage.exists(filename) && READEST_LIB_STORE.getLocalPath(book.hash) != filename) {
+    // Same sanitized title+author as a different existing file (e.g. two
+    // editions) — HttpDownloader would silently replace it. Keep both.
+    filename = baseName + " [" + book.hash.substr(0, 8) + "]" + ext;
+  }
   LOG_DBG("RLIB", "Downloading: hash=%.8s… -> %s", book.hash.c_str(), filename.c_str());
 
-  const auto result =
-      HttpDownloader::downloadToFile(it->second, filename, [this](const size_t downloaded, const size_t total) {
+  // This branch's HttpDownloader has no shouldCancel hook; poll input from
+  // the progress callback (fires per chunk) and trip the cancelFlag it does
+  // check between chunks.
+  bool cancelRequested = false;
+  const auto result = HttpDownloader::downloadToFile(
+      it->second, filename,
+      [this, &cancelRequested](const size_t downloaded, const size_t total) {
         downloadProgress = downloaded;
         downloadTotal = total;
+        mappedInput.update();
+        if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
+            mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+            mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+          cancelRequested = true;
+        }
         requestUpdate(true);
-      });
+      },
+      &cancelRequested);
 
   if (result == HttpDownloader::OK) {
     Epub(filename, "/.crosspoint").clearCache();
     READEST_LIB_STORE.recordDownload(book.hash, filename);
+    state = State::BROWSING;
+  } else if (result == HttpDownloader::ABORTED) {
+    LOG_DBG("RLIB", "Download cancelled");
+    consumeNextBackRelease = true;  // the cancelling press would otherwise fire in BROWSING
     state = State::BROWSING;
   } else {
     state = State::ERROR;
@@ -304,9 +365,7 @@ void ReadestLibraryActivity::downloadBook(const ReadestStorageClient::BookRow& b
 
 void ReadestLibraryActivity::checkAndConnectWifi() {
   if (WiFi.status() == WL_CONNECTED) {
-    state = State::LOADING;
-    statusMessage = tr(STR_LOADING);
-    requestUpdate();
+    showLoadingBeforeFetch();
     fetchBooks();
     return;
   }
@@ -323,9 +382,7 @@ void ReadestLibraryActivity::launchWifiSelection() {
 
 void ReadestLibraryActivity::onWifiSelectionComplete(const bool connected) {
   if (connected) {
-    state = State::LOADING;
-    statusMessage = tr(STR_LOADING);
-    requestUpdate(true);
+    showLoadingBeforeFetch();
     fetchBooks();
   } else {
     WiFi.disconnect();
