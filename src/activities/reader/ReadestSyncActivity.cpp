@@ -62,6 +62,9 @@ void ReadestSyncActivity::onWifiSelectionComplete(const bool success) {
   }
   requestUpdate(true);
 
+  // Shed BLE + font caches; the TLS handshake needs the room (see SyncActivityUtils).
+  SyncActivityUtils::releaseHeapForTls(renderer);
+
   // Supabase rejects skewed clocks on token refresh.
   NtpSync::syncTime();
 

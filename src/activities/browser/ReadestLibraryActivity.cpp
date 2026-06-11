@@ -17,6 +17,7 @@
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/reader/SyncActivityUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
@@ -226,6 +227,8 @@ void ReadestLibraryActivity::showLoadingBeforeFetch() {
   state = State::LOADING;
   statusMessage = tr(STR_LOADING);
   requestUpdateAndWait();
+  // Shed font caches; the TLS handshake needs the room (see SyncActivityUtils).
+  SyncActivityUtils::releaseHeapForTls(renderer);
 }
 
 void ReadestLibraryActivity::fetchBooks() {

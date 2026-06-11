@@ -15,6 +15,7 @@ class ReadestAuthClient {
     FORBIDDEN,            // 403 — auth required but missing
     SERVER_ERROR,         // 5xx
     JSON_ERROR,           // response parse failure
+    LOW_MEMORY,           // TLS pre-flight refused: not enough free heap for the handshake
   };
 
   // Authenticate with email + password. errMsg receives the server's

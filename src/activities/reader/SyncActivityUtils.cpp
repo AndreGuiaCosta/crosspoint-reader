@@ -1,10 +1,25 @@
 #include "SyncActivityUtils.h"
 
+#include <FontCacheManager.h>
+#include <GfxRenderer.h>
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
 
 namespace SyncActivityUtils {
+
+void releaseHeapForTls(GfxRenderer& renderer) {
+  LOG_INF("Sync", "Releasing heap for TLS (free before: %u)", (unsigned)ESP.getFreeHeap());
+
+  // SD .cpfont glyph caches survive the reader session and can hold tens of
+  // KB. Glyphs reload on demand at the next render. (CrumBLE additionally
+  // sheds its BLE host here; this branch has none.)
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->clearCache();
+  }
+
+  LOG_INF("Sync", "Heap released for TLS (free after: %u)", (unsigned)ESP.getFreeHeap());
+}
 
 void wifiOff() {
   if (esp_sntp_enabled()) {

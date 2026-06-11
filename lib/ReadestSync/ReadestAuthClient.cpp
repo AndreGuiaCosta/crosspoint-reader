@@ -18,6 +18,7 @@ constexpr int LOGOUT_READ_TIMEOUT = 7000;
 ReadestAuthClient::Error mapHttpStatus(int code) {
   using E = ReadestAuthClient::Error;
   if (code == 200) return E::OK;
+  if (code == ReadestHttp::LOW_HEAP) return E::LOW_MEMORY;  // distinct: triggers the restart-auth recovery
   if (code == 400 || code == 401) return E::INVALID_CREDENTIALS;
   if (code == 403) return E::FORBIDDEN;
   if (code >= 500) return E::SERVER_ERROR;
@@ -151,6 +152,8 @@ const char* ReadestAuthClient::errorString(Error err) {
       return "Server error";
     case JSON_ERROR:
       return "Malformed response";
+    case LOW_MEMORY:
+      return "Low memory";
   }
   return "Unknown error";
 }

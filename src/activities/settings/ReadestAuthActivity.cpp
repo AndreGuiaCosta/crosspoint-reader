@@ -9,7 +9,9 @@
 #include <WiFi.h>
 
 #include "MappedInputManager.h"
+#include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/reader/SyncActivityUtils.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -72,6 +74,11 @@ void ReadestAuthActivity::onWifiSelectionComplete(const bool success) {
   }
   requestUpdate();
 
+  // Shed BLE + font caches; the TLS handshake needs the room (see
+  // SyncActivityUtils). With an SD .cpfont and no BT bonded, the glyph
+  // caches alone can hold 45-60KB after a reader session.
+  SyncActivityUtils::releaseHeapForTls(renderer);
+
   // Supabase rejects skewed clocks on token issuance.
   NtpSync::syncTime();
 
@@ -81,6 +88,20 @@ void ReadestAuthActivity::onWifiSelectionComplete(const bool success) {
 void ReadestAuthActivity::performSignIn() {
   std::string errMsg;
   const auto rc = ReadestAuthClient::signIn(emailCached, passwordEntered, &errMsg);
+
+  if (rc == ReadestAuthClient::LOW_MEMORY) {
+    // Even after the shed, this device can't fit the TLS handshake next to
+    // WiFi (SD-font X4 baseline ~71KB vs ~59KB WiFi + ~54KB TLS). Park the
+    // password in RTC memory and silent-restart: the sign-in reruns early in
+    // setup() where the heavy singletons haven't loaded. The panel keeps the
+    // "Authenticating" popup through the reboot; the outcome lands in the
+    // settings screen's Last Sync / Last Error rows.
+    setSilentRebootAuthPassword(passwordEntered);
+    passwordEntered.clear();
+    silentRestartToReadestAuth();  // does not return on device
+    return;
+  }
+
   // Drop password from memory regardless of outcome.
   passwordEntered.clear();
 
