@@ -1,7 +1,6 @@
 #include "ReadestHash.h"
 
 #include <Epub.h>
-#include <HalStorage.h>
 #include <Logging.h>
 #include <MD5Builder.h>
 
@@ -48,53 +47,8 @@ const ReadestMetaExtractor::Identifier* pickPreferredIdentifier(
 }  // namespace
 
 std::string ReadestHash::partialMd5(const std::string& filePath) {
-  HalFile file;
-  if (!Storage.openFileForRead("RHSH", filePath, file)) {
-    LOG_DBG("RHSH", "Failed to open file: %s", filePath.c_str());
-    return "";
-  }
-
-  const size_t fileSize = file.fileSize();
-  LOG_DBG("RHSH", "partialMd5 for %s (size: %zu)", filePath.c_str(), fileSize);
-
-  SampleRange ranges[MAX_SAMPLES];
-  const size_t rangeCount = partialMd5SampleRanges(fileSize, ranges);
-
-  MD5Builder md5;
-  md5.begin();
-
-  uint8_t buffer[SAMPLE_SIZE];
-  size_t totalBytesRead = 0;
-
-  for (size_t i = 0; i < rangeCount; ++i) {
-    const size_t start = ranges[i].start;
-    const size_t length = ranges[i].length;
-
-    if (!file.seekSet(start)) {
-      LOG_ERR("RHSH", "Seek to %zu failed", start);
-      file.close();
-      return "";
-    }
-
-    // read() returns a signed int: -1 on I/O error. Keep it signed — stuffing
-    // it into size_t would turn -1 into SIZE_MAX and feed md5.add a wild length.
-    const int bytesRead = file.read(buffer, length);
-    if (bytesRead <= 0) {
-      LOG_ERR("RHSH", "Read at offset %zu returned %d", start, bytesRead);
-      file.close();
-      return "";
-    }
-
-    md5.add(buffer, static_cast<size_t>(bytesRead));
-    totalBytesRead += static_cast<size_t>(bytesRead);
-  }
-
-  file.close();
-
-  md5.calculate();
-  std::string result = md5.toString().c_str();
-  LOG_DBG("RHSH", "partialMd5 = %s (from %zu bytes sampled)", result.c_str(), totalBytesRead);
-  return result;
+  // A partial hash would be a wrong book identity — abort on read errors.
+  return PartialMd5::hashFile("RHSH", filePath, PartialMd5::ReadErrorPolicy::ABORT);
 }
 
 std::string ReadestHash::metaMd5(const Epub& epub) {
