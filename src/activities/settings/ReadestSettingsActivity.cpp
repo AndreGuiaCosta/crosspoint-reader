@@ -115,13 +115,15 @@ void ReadestSettingsActivity::handleSelection() {
                              }
                            });
   } else if (selectedIndex == ITEM_PASSWORD) {
-    // Prefill blank so we never echo the stored value; blank submit is a no-op.
+    // Prefill blank so we never echo the stored value. Confirming an empty
+    // entry clears the stored password — otherwise no path ever removes it
+    // from the SD card (Back still cancels without touching it).
     startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_READEST_PASSWORD), "",
                                                                    128, InputType::Password),
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& kb = std::get<KeyboardResult>(result.data);
-                               if (!kb.text.empty()) READEST_STORE.setPassword(kb.text);
+                               READEST_STORE.setPassword(kb.text);
                              }
                            });
   } else if (selectedIndex == ITEM_SIGN_IN) {
