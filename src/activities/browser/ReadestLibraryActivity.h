@@ -32,6 +32,7 @@ class ReadestLibraryActivity final : public Activity {
   void checkAndConnectWifi();
   void launchWifiSelection();
   void onWifiSelectionComplete(bool connected);
+  void showLoadingBeforeFetch();
   void fetchBooks();
   void downloadBook(const ReadestStorageClient::BookRow& book);
   bool preventAutoSleep() override { return true; }
