@@ -1,13 +1,19 @@
 # Readest Sync — review fix plan (and cross-branch porting strategy)
 
-> **Status 2026-06-11:** Phases 0–2 (items 1–12) are DONE on `readest-on-crumble`
-> and ported to `readest-sync` (Phase 0 + 9 fixes cherry-picked; library-UX
-> cancel adapted to upstream's HttpDownloader cancelFlag API + a
-> consumeNextBackRelease member; goHome sliver hand-applied — upstream's
-> menuItemToIndex already handled READEST_LIBRARY). Builds verified:
-> crumble sim + tiny, readest-sync default. Sim repo gained
-> useHTTP10()/getStream() stubs (commit a447daa).
-> Remaining: Phases 3–5 (items 13–22).
+> **Status 2026-06-11: ALL PHASES (0–5, items 1–22) DONE on both branches.**
+> Builds verified after every round: crumble `simulator` + `tiny`,
+> readest-sync `default`; ReadestHashTest 11/11 on both.
+> Port adaptations that are now permanent cross-branch divergence points:
+> - HttpDownloader cancel (cancelFlag/progress-callback polling + a
+>   consumeNextBackRelease member on readest-sync vs DownloadOptions on crumble)
+> - HalFile vs FsFile in PartialMd5.cpp / upstream API drift fixed in 57f99760
+> - `tagEqualsWithPrefix` removed on crumble (no callers) but KEPT on
+>   readest-sync — upstream's ContentOpfParser uses it
+> - upstream KOReaderSyncActivity keeps `esp_wifi_stop()` post-upload and its
+>   void `requestUpdateAndWait()`
+> Item 19 sub-items skipped by design (see note under item 19); item 21's
+> kosync setInsecure() kept (self-signed self-hosted servers).
+> Sim repo: useHTTP10()/getStream() stubs + comment update (2 commits).
 
 Source: code review of `readest-on-crumble` (diff vs `crumble/main`, 63 files, +4,247).
 Goal: fix the confirmed bugs and cleanups on `readest-on-crumble`, and land every
