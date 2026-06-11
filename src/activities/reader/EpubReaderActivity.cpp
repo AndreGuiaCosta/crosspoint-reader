@@ -629,7 +629,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       } else {
         activityManager.replaceActivity(std::make_unique<ReadestSyncActivity>(
             renderer, mappedInput, savedEpubPath, currentSpineIndex, curPage, totalPages, std::move(bookHash),
-            std::move(metaHash), std::move(localReadest), std::move(localChapterName), paragraphIndex));
+            std::move(metaHash), std::move(localReadest), std::move(localChapterName)));
       }
       break;
     }

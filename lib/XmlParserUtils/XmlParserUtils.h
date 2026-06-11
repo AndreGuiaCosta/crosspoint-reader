@@ -21,14 +21,3 @@ inline bool tagEquals(const XML_Char* name, const char* local) {
   const char* colon = strchr(name, ':');
   return strcmp(colon ? colon + 1 : name, local) == 0;
 }
-
-// Match an XML tag with a specific required prefix. tagEqualsWithPrefix(name, "dc", "title")
-// matches only <dc:title>, NOT <title> or <opf:title>. Use when the caller relies on
-// namespace-strict semantics (e.g. distinguishing dc:title from opf:title in OPF metadata).
-inline bool tagEqualsWithPrefix(const XML_Char* name, const char* prefix, const char* local) {
-  const char* colon = strchr(name, ':');
-  if (!colon) return false;
-  const size_t prefixLen = static_cast<size_t>(colon - name);
-  if (strncmp(name, prefix, prefixLen) != 0 || prefix[prefixLen] != '\0') return false;
-  return strcmp(colon + 1, local) == 0;
-}

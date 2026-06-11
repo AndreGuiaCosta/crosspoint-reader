@@ -31,10 +31,6 @@ class ReadestAccountStore {
   std::string accessToken;
   std::string refreshToken;
   int64_t expiresAt = 0;  // Unix seconds (Supabase wire format).
-  int64_t expiresIn = 0;  // Seconds; used to compute the refresh half-life.
-
-  // Last `since` cursor used for /api/sync pulls. Unix milliseconds.
-  int64_t lastConfigsSyncAtMs = 0;
 
   // Outcome of the most recent sync attempt. lastSyncAtMs is stamped on
   // success and left untouched on failure.
@@ -77,7 +73,6 @@ class ReadestAccountStore {
   const std::string& getAccessToken() const { return accessToken; }
   const std::string& getRefreshToken() const { return refreshToken; }
   int64_t getExpiresAt() const { return expiresAt; }
-  int64_t getExpiresIn() const { return expiresIn; }
 
   // Persists email; token state is left untouched.
   void setUserEmail(const std::string& email);
@@ -88,12 +83,9 @@ class ReadestAccountStore {
 
   // Replace the active session with a fresh token bundle. Persists.
   void setSession(const std::string& email, const std::string& userId, const std::string& accessToken,
-                  const std::string& refreshToken, int64_t expiresAt, int64_t expiresIn);
+                  const std::string& refreshToken, int64_t expiresAt);
   // Wipe identity + tokens. Persists.
   void clearSession();
-
-  int64_t getLastConfigsSyncAtMs() const { return lastConfigsSyncAtMs; }
-  void setLastConfigsSyncAtMs(int64_t ms);
 
   int64_t getLastSyncAtMs() const { return lastSyncAtMs; }
   const std::string& getLastSyncError() const { return lastSyncError; }
@@ -101,14 +93,9 @@ class ReadestAccountStore {
   // leaves the timestamp and records errMsg. Persists.
   void recordSyncResult(bool ok, const std::string& errMsg);
 
-  // True iff a non-empty access token is present (does not check expiry).
+  // True iff a non-empty access token is present (does not check expiry —
+  // expired tokens are refreshed lazily when a request returns AUTH_EXPIRED).
   bool hasCredentials() const;
-  // True iff sign-in is required: token missing OR expires within 60 s.
-  bool needsLogin() const;
-  // True iff past the token half-life. Hosted Supabase issues 7-day tokens,
-  // so lazy refresh on AUTH_EXPIRED is usually preferable to checking this
-  // on every call; reserve for boot prewarming or long idle resumes.
-  bool needsRefresh() const;
 };
 
 #define READEST_STORE ReadestAccountStore::getInstance()

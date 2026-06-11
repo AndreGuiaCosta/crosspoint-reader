@@ -129,12 +129,10 @@ void ReadestSyncActivity::performSync() {
   if (pulled.bookHash.empty() || pulled.deleted) {
     RenderLock lock(*this);
     state = NO_REMOTE_PROGRESS;
-    hasRemote = false;
     requestUpdate(true);
     return;
   }
 
-  hasRemote = true;
   remoteConfig = pulled;
 
   // Epub was released before sync to free RAM for the TLS handshake — reload it now.

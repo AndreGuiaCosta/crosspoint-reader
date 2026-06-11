@@ -56,13 +56,12 @@ bool applyTokenResponse(const JsonDocument& doc) {
   }
   std::string refreshToken = doc["refresh_token"] | std::string("");
   int64_t expiresAt = doc["expires_at"] | static_cast<int64_t>(0);
-  int64_t expiresIn = doc["expires_in"] | static_cast<int64_t>(0);
 
   // user object only ships on initial sign-in; preserve existing on refresh.
   std::string userId = doc["user"]["id"] | READEST_STORE.getUserId();
   std::string userEmail = doc["user"]["email"] | READEST_STORE.getUserEmail();
 
-  READEST_STORE.setSession(userEmail, userId, accessToken, refreshToken, expiresAt, expiresIn);
+  READEST_STORE.setSession(userEmail, userId, accessToken, refreshToken, expiresAt);
   return true;
 }
 }  // namespace
