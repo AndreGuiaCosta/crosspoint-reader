@@ -53,11 +53,9 @@ bool loadAccount(ReadestAccountStore& store, const char* json) {
   store.userEmail = doc["userEmail"] | std::string("");
   store.userId = doc["userId"] | std::string("");
   {
-    obfuscation::DecodeStatus status = obfuscation::DecodeStatus::INVALID;
-    store.password = obfuscation::deobfuscateFromBase64(doc["password_obf"] | "", &status);
-    if (status == obfuscation::DecodeStatus::INVALID || status == obfuscation::DecodeStatus::EMPTY) {
-      store.password.clear();
-    }
+    bool ok = false;
+    store.password = obfuscation::deobfuscateFromBase64(doc["password_obf"] | "", &ok);
+    if (!ok) store.password.clear();
   }
   store.accessToken = doc["accessToken"] | std::string("");
   store.refreshToken = doc["refreshToken"] | std::string("");

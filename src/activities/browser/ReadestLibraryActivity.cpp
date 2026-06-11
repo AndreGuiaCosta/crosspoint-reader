@@ -216,10 +216,7 @@ void ReadestLibraryActivity::showLoadingBeforeFetch() {
   // paint (same fix as OpdsBookBrowserActivity::showLoadingBeforeFetch).
   state = State::LOADING;
   statusMessage = tr(STR_LOADING);
-  if (requestUpdateAndWait() != RequestUpdateResult::Rendered) {
-    LOG_ERR("RLIB", "Loading screen could not be rendered before fetch");
-    requestUpdate(true);
-  }
+  requestUpdateAndWait();
 }
 
 void ReadestLibraryActivity::fetchBooks() {
@@ -322,7 +319,7 @@ void ReadestLibraryActivity::downloadBook(const ReadestStorageClient::BookRow& b
   const std::string baseName =
       "/" + StringUtils::sanitizeFilename(book.title + (book.author.empty() ? "" : " - " + book.author));
   std::string filename = baseName + ext;
-  if (Storage.exists(filename) && READEST_LIB_STORE.getLocalPath(book.hash) != filename) {
+  if (Storage.exists(filename.c_str()) && READEST_LIB_STORE.getLocalPath(book.hash) != filename) {
     // Same sanitized title+author as a different existing file (e.g. two
     // editions) — HttpDownloader would silently replace it. Keep both.
     filename = baseName + " [" + book.hash.substr(0, 8) + "]" + ext;

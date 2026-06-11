@@ -48,7 +48,7 @@ const ReadestMetaExtractor::Identifier* pickPreferredIdentifier(
 }  // namespace
 
 std::string ReadestHash::partialMd5(const std::string& filePath) {
-  FsFile file;
+  HalFile file;
   if (!Storage.openFileForRead("RHSH", filePath, file)) {
     LOG_DBG("RHSH", "Failed to open file: %s", filePath.c_str());
     return "";
