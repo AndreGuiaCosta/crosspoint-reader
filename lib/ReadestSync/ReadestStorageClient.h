@@ -28,6 +28,12 @@ class ReadestStorageClient {
     int progressTotal = 0;
     int64_t uploadedAtMs = 0;
     int64_t updatedAtMs = 0;
+    // Server-assigned pull cursor (books_set_synced_at trigger). The server
+    // filters books on synced_at > since, so the cursor must be derived from
+    // it — updated_at is client-supplied and clock-skew can run it ahead of
+    // synced_at, which would silently skip later changes. 0 when the server
+    // predates the synced_at column (e.g. an older self-hosted stack).
+    int64_t syncedAtMs = 0;
     bool deleted = false;
   };
 

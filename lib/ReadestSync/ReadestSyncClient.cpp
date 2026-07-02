@@ -11,7 +11,7 @@
 
 namespace {
 constexpr int SYNC_CONNECT_TIMEOUT = 5000;
-constexpr int SYNC_READ_TIMEOUT = 10000;
+constexpr int SYNC_READ_TIMEOUT = 15000;
 
 ReadestSyncClient::Error mapHttpStatus(int code) {
   using E = ReadestSyncClient::Error;

@@ -11,7 +11,7 @@
 
 namespace {
 constexpr int STORAGE_CONNECT_TIMEOUT = 5000;
-constexpr int STORAGE_READ_TIMEOUT = 10000;
+constexpr int STORAGE_READ_TIMEOUT = 15000;
 
 constexpr char DUMMY_BOOK_HASH[] = "00000000000000000000000000000000";
 
@@ -44,6 +44,8 @@ void rowToBook(JsonObjectConst row, ReadestStorageClient::BookRow& out) {
   out.uploadedAtMs = ReadestTimeUtils::parseIso8601ToMs(uploadedAt);
   const std::string updatedAt = row["updated_at"] | std::string("");
   out.updatedAtMs = ReadestTimeUtils::parseIso8601ToMs(updatedAt);
+  const std::string syncedAt = row["synced_at"] | std::string("");
+  out.syncedAtMs = ReadestTimeUtils::parseIso8601ToMs(syncedAt);
   const std::string deletedAt = row["deleted_at"] | std::string("");
   out.deleted = !deletedAt.empty();
 }
@@ -91,6 +93,7 @@ ReadestStorageClient::Error ReadestStorageClient::pullBooksSince(int64_t sinceMs
   f["progress"] = true;
   f["uploaded_at"] = true;
   f["updated_at"] = true;
+  f["synced_at"] = true;
   f["deleted_at"] = true;
   rq.filter = &filter;
 
@@ -104,8 +107,11 @@ ReadestStorageClient::Error ReadestStorageClient::pullBooksSince(int64_t sinceMs
     BookRow parsed;
     rowToBook(row, parsed);
     if (parsed.hash == DUMMY_BOOK_HASH) continue;
-    if (maxUpdatedAtMs && parsed.updatedAtMs > *maxUpdatedAtMs) {
-      *maxUpdatedAtMs = parsed.updatedAtMs;
+    // Cursor from synced_at (the column the server filters on); fall back to
+    // updated_at against pre-synced_at servers, where the two are equivalent.
+    const int64_t cursorMs = parsed.syncedAtMs > 0 ? parsed.syncedAtMs : parsed.updatedAtMs;
+    if (maxUpdatedAtMs && cursorMs > *maxUpdatedAtMs) {
+      *maxUpdatedAtMs = cursorMs;
     }
     if (out) out->push_back(std::move(parsed));
   }
