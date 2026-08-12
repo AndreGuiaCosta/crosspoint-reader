@@ -85,6 +85,14 @@ Two caveats found by reading the implementation, both of which matter later:
   `#if defined(ARDUINO_ARCH_ESP32) && !defined(SIMULATOR)`, with `#else return false`
   ([NearbyTransfer.cpp:155-157](../freeink-sdk/libs/network/NearbyTransfer/src/NearbyTransfer.cpp)).
   This makes the UDP-loopback shim in §11 mandatory rather than merely convenient.
+- **It costs ~4.4 KB of RAM to hold, sized for a job PageFlip does not do.** `EspNowTransport`
+  embeds `std::array<Event, 4>`, and each `Event` carries a `std::array<uint8_t, MAX_PACKET_BYTES>`
+  with `MAX_PACKET_BYTES = 1100` — a queue dimensioned for `ReliableTransferSession`'s 1 KB file
+  chunks, while a PageFlip packet is 25 bytes. On a 380 KB device that is worth knowing before it
+  shows up as a heap regression. It is not a blocker (the object is a single long-lived instance,
+  and 4.4 KB is affordable), and the honest options if it ever is: hold it only while pairing is
+  active, or call `esp_now_register_recv_cb` directly from the ESP-NOW implementation of the §11
+  interface and keep a 4×64 B queue. Do not fork the SDK library to shrink the constant.
 
 ### Verified APIs (checked in the prebuilt C3 framework, not from memory)
 
@@ -141,11 +149,13 @@ who is in charge.
 
 ### The packet
 
-Broadcast by whichever device turned the page, ~28 bytes:
+Broadcast by whichever device turned the page. As implemented
+([lib/PageFlip/PageFlipPacket.h](../lib/PageFlip/PageFlipPacket.h)) it is **25 bytes**:
 
 ```
-magic        u16   'PF'
+magic        u16   'PF'  (0x50 0x46 on the wire — little-endian throughout)
 protoVer     u8
+message      u8    Turn | Hello
 flags        u8    role(left/right), dir(fwd/back), atBookEnd
 compatHash   u32   see §5
 bookId       u32   existing EPUB path hash
@@ -153,6 +163,25 @@ turnSeq      u32   shared logical turn count — dedup key AND drift detector
 spineIndex   i32   sender's own resulting position
 pageNumber   i32
 ```
+
+Three things settled while building it:
+
+- **`message` is new** — an earlier draft of this list had no type discriminator, but §4's `HELLO`
+  rides the same transport, so one is needed. Adding it now costs a byte; adding it later breaks the
+  wire. `peekMessage()` reads it from the 4-byte header alone, so a receive loop dispatches before
+  committing to a decode.
+- **The packet *is* the ESP-NOW payload.** The SDK's `encodePacket()` framing is not used: its
+  16-byte header would nearly double a 25-byte packet to carry a type, session id and sequence that
+  `message` / `bookId` / `turnSeq` already cover. PageFlip wraps the SDK's *transport*
+  (send/poll/localMac), not its packet format.
+- **Encoding is explicit little-endian, byte at a time, never a cast over the buffer** — the RISC-V
+  unaligned-load rule applies to the wire exactly as it does to the cache deserialization code.
+  `WireLayoutIsPinned` in the unit test pins the 25 bytes, so a field reorder fails in CI rather
+  than as a desync between two X4s.
+
+Decoding rejects foreign traffic (wrong magic, unknown `protoVer`, unknown `message`) and any short
+buffer, but **tolerates trailing bytes** so a later version can append fields without breaking
+today's receivers. That matters on a broadcast medium shared with whatever else is on the channel.
 
 `pageNumber` is safe **here** — and only here — because `compatHash` rides in the same packet, so
 a turn is only ever applied between devices already proven to share a layout. The *join* path
