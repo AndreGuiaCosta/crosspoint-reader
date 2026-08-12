@@ -190,6 +190,12 @@ turns want the cheap comparable integer, joins need the layout-independent ancho
 
 ### Apply rule
 
+Implemented in [`PageFlipSession`](../lib/PageFlip/PageFlipSession.h), which decides and returns a
+`PageFlipAction` (`Ignore` / `AdvanceTwo` / `Heal` / `Mismatch`); the reader applies it. Keeping the
+decision out of the activity is what lets the awkward cases — dedup, drift healing, simultaneous
+presses, the lower-MAC tiebreak — be driven by host tests against two real sessions on real
+sockets, instead of only through the UI.
+
 On a local press: `turnSeq++`, advance own position by two, broadcast.
 
 On receive, compare `turnSeq` against the local one:
