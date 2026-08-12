@@ -90,6 +90,9 @@ bool encodeTurn(const PageFlipTurn& turn, uint8_t* output, size_t capacity, size
 }
 
 bool decodeTurn(const uint8_t* data, size_t length, PageFlipTurn& turn) {
+  // Order matters, and it is the pattern every future decoder must follow: hasPageFlipHeader()
+  // only guarantees HEADER_BYTES, so nothing past that may be read until the length check below.
+  // OFF_MESSAGE sits inside the header, which is why it can be read here.
   if (!hasPageFlipHeader(data, length)) return false;
   if (data[OFF_MESSAGE] != static_cast<uint8_t>(PageFlipMessage::Turn)) return false;
   // Trailing bytes are fine (a later version may append fields); a short packet is not.

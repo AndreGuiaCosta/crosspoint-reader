@@ -360,6 +360,11 @@ Required behaviour:
   today's inactivity timer would sleep it out from under the reader. `lastActivityTime`
   ([main.cpp:494-499](../src/main.cpp)) must be reset on received packets — mirroring how
   `feat-bluetooth` added `bleHadActivityThisFrame()` for exactly this reason.
+  **Only a fully decoded packet counts.** ESP-NOW is a broadcast medium, and the receive path
+  deliberately dispatches on the 4-byte header before decoding, so "looks like ours" and "is ours"
+  are different answers. Resetting the sleep timer on the former lets any stray broadcaster on the
+  channel keep the device awake indefinitely — a battery bug that would only ever reproduce in
+  someone else's room.
 - **Role is fixed, authority is not a concept.** Left/right is a per-device display setting that
   sets the join offset (§3). Either device may originate a turn; neither is in charge.
 
