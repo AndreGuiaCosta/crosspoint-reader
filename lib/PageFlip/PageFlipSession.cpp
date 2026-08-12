@@ -94,7 +94,14 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
     // it: no position has been applied yet, so nothing has to be undone. Note the counter above is
     // adopted either way -- turnSeq is a session fact, not a layout one, and skipping it would
     // leave the pair deadlocked the moment force-sync (section 5.1) made them compatible.
-    decision.action = hello.compatHash == compatHash ? PageFlipAction::PeerHello : PageFlipAction::Mismatch;
+    //
+    // Unless one side has not rendered yet, in which case there is nothing to compare and the
+    // honest verdict is neither "compatible" nor "incompatible". The caller still answers the
+    // greeting; both devices re-greet once their own first render fixes the viewport, so the pair
+    // converges a round later without anyone being told a layout story that was never true.
+    decision.layoutDecided = canCompareLayout(hello.compatHash);
+    decision.action = (!decision.layoutDecided || hello.compatHash == compatHash) ? PageFlipAction::PeerHello
+                                                                                 : PageFlipAction::Mismatch;
     return true;
   }
 
@@ -103,6 +110,15 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
 
   // A peer reading a different book is alive but has nothing to say about this one.
   if (incoming.bookId != bookId) return true;
+
+  // Same sentinel rule as the greeting above. A turn arriving while either side is still
+  // undecided is not applied -- stepping a position whose layout is unknown is exactly the desync
+  // this guards -- but it is not reported either. The next turn after both have rendered runs
+  // ahead of the counter, so it heals absolutely rather than replaying, which is self-correcting.
+  if (!canCompareLayout(incoming.compatHash)) {
+    decision.layoutDecided = false;
+    return true;  // Ignore
+  }
 
   if (incoming.compatHash != compatHash) {
     decision.action = PageFlipAction::Mismatch;

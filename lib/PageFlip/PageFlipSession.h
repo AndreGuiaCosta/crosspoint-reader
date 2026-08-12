@@ -40,6 +40,11 @@ struct PageFlipDecision {
   // PeerHello only: the greeting expects an answer. An answer does not, which is what keeps two
   // devices from greeting each other forever.
   bool peerWantsReply = false;
+
+  // False while either device is still advertising the "not computed yet" compat sentinel, which
+  // it does until its own first render has fixed the viewport. Comparing against that decides
+  // nothing, so the packet must not be treated as agreement OR as a mismatch -- see poll().
+  bool layoutDecided = true;
 };
 
 class PageFlipSession {
@@ -83,6 +88,13 @@ class PageFlipSession {
  private:
   // Lower MAC wins a conflict (section 3). Returns true when this device is the winner.
   bool winsTiebreakAgainst(const uint8_t peerMac[PageFlipTransport::MAC_BYTES]) const;
+
+  // Whether the two hashes can be compared at all. Zero is the "not computed yet" sentinel -- the
+  // viewport is a render() output, so a device advertises zero from the moment its link comes up
+  // until its first page has been laid out, which on a cold cache is seconds. Treating that as a
+  // mismatch would report incompatibility between two identically configured devices every time
+  // one rendered faster than the other.
+  bool canCompareLayout(uint32_t peerHash) const { return compatHash != 0 && peerHash != 0; }
 
   PageFlipTransport& transport;
   PageFlipRole role;

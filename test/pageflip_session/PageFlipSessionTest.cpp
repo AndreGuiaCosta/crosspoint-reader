@@ -364,6 +364,55 @@ TEST_F(PageFlipSessionTest, MismatchedGreetingStillAdoptsTheCounter) {
   EXPECT_EQ(pair.right.getTurnSeq(), 847u);
 }
 
+// The cold-start hole. A device advertises compatHash 0 -- "not computed yet" -- from the moment
+// its link comes up until its first render fixes the viewport, which on a cold cache is seconds.
+// A bare equality check reads that as a mismatch, so two identically configured devices would
+// report incompatibility every time one rendered faster than the other: warm cache on one, cold on
+// the other, i.e. the second time you open a book. Neither simulator harness can catch this,
+// because both copy identical SD roots and the two halves hash within a millisecond of each other.
+TEST_F(PageFlipSessionTest, AGreetingFromADeviceThatHasNotRenderedIsNotAMismatch) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  pair.left.setBook(BOOK, 0);  // link up, first render still in flight
+
+  ASSERT_TRUE(pair.left.announceHello(0, 0, true));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::PeerHello);
+  EXPECT_FALSE(decision.layoutDecided) << "nothing has been established, so nothing may be paired on";
+  EXPECT_TRUE(decision.peerWantsReply) << "the handshake still completes; the pair converges next round";
+}
+
+// The same hole in the other direction: this device is the one that has not rendered.
+TEST_F(PageFlipSessionTest, AGreetingReceivedBeforeOurOwnFirstRenderIsNotAMismatch) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  pair.right.setBook(BOOK, 0);
+
+  ASSERT_TRUE(pair.left.announceHello(0, 0, true));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::PeerHello);
+  EXPECT_FALSE(decision.layoutDecided);
+}
+
+// A turn arriving in that same window must not be applied -- stepping a position whose layout is
+// unknown is the desync the hash exists to prevent -- but it must not be reported either.
+TEST_F(PageFlipSessionTest, ATurnFromADeviceThatHasNotRenderedIsIgnoredNotReported) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  pair.left.setBook(BOOK, 0);
+
+  ASSERT_TRUE(pair.left.announceLocalTurn(true, 4, 2, false));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::Ignore);
+  EXPECT_FALSE(decision.layoutDecided);
+}
+
 TEST_F(PageFlipSessionTest, SoloTurnsStillAdvanceTheCounter) {
   PageFlipUdpTransport transport;
   ASSERT_TRUE(startOnSlot(transport, "0"));

@@ -550,6 +550,21 @@ rather than hooking individual settings — is also what makes §4.4 fire for fr
 than orientation: the automatic-page-turn toggle moves the bottom margin, so it genuinely
 re-paginates and genuinely changes the hash.
 
+**Zero is a sentinel and must be checked as one, on both sides.** Because the hash is unavailable
+until the first render, a device is live on the wire advertising `0` for as long as that render
+takes — seconds on a cold cache. A bare `peerHash == localHash` comparison reads that as a
+*mismatch*, so two **identically configured** devices report incompatibility whenever one renders
+faster than the other. That is not a corner case: it is "the second time you open the book on one
+of the devices". `canCompareLayout()` therefore requires both hashes to be non-zero; an undecided
+packet is neither agreement nor mismatch. The greeting is still answered so the handshake
+completes, but nothing pairs on it, and both devices re-greet when their own first render lands, so
+the pair converges a round later.
+
+Neither pair harness could have caught this — both copy identical SD roots to the two halves, so
+they render within a millisecond of each other and the skew is zero by construction.
+`run_sim_pair_coldstart.sh` creates the skew deliberately (warm one cache, wipe the other) and
+asserts neither half reports anything.
+
 **Detection belongs on the greeting, not on the first turn.** `Hello` carries `compatHash`, so the
 mismatch is caught before any position has been applied. An incompatible peer is still *answered*
 — the answer carries this device's own hash, which is how the other user gets told too. One device
@@ -563,6 +578,14 @@ leaving it set means this device turns two pages per press while the peer reject
 them — the silent desync this section exists to prevent, dressed up as a working feature. Solo
 reading is wrong-but-usable; that pair would be wrong-and-invisible. A mismatching peer likewise
 does not refresh `lastPeerContactMs`, so it cannot hold the device awake through `preventAutoSleep`.
+
+**Acting is immediate; telling the user waits.** Dropping the pairing happens on the packet, but the
+notice is held for `MISMATCH_CONFIRM_MS` and cancelled if the layouts reconverge first. Two devices
+in a shared case do not rotate in the same instant, so the one that turns first genuinely mismatches
+for a moment before the other catches up — popping a notice on that transient would train the user
+to ignore the notice that matters. The timer is drained by the pump rather than by the receive path,
+because a *permanent* mismatch produces no further packets to hang the check on: the peer only
+re-greets when its own hash changes.
 
 Mismatch → do not sync silently. Offer §5.1.
 
@@ -815,7 +838,8 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
    `test/pageflip_compat` (per-field coverage plus a pinned wire value) and by
    `run_sim_pair_mismatch.sh`, the negative twin of the pair harness — it starts the right half with
    a different `screenMargin` and asserts both halves report it, neither counts the other as
-   present, and the right half's page never moves under the left half's presses.
+   present, and the right half's page never moves under the left half's presses. Plus
+   `run_sim_pair_coldstart.sh` for the skew case the symmetric harnesses cannot see.
 4. **Settings force-sync** — §5.1. The prompt-on-both / confirm-on-one gesture, the
    `ReaderRenderSpec`-feeding subset, the two-phase preflight/abort with `findFamily()`, and the
    rebuild progress UI.

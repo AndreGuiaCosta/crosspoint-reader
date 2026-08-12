@@ -1181,6 +1181,7 @@ void EpubReaderActivity::pageflipEnd() {
   pageflipCompatMismatch = false;
   pendingPageflipMismatch = false;
   pageflipOweHelloAnswer = false;
+  pageflipMismatchSinceMs = 0;
 }
 
 bool EpubReaderActivity::pageflipSettledPage(int& page) {
@@ -1238,9 +1239,13 @@ void EpubReaderActivity::pageflipReportMismatch(const PageFlipDecision& decision
   if (pageflipCompatMismatch) return;
 
   pageflipCompatMismatch = true;
-  pendingPageflipMismatch = true;
   LOG_ERR("ERS", "PageFlip peer has an incompatible layout; not pairing");
-  requestUpdate();
+  // Acting is immediate; telling the user waits. Two devices rotating together in a shared case do
+  // not rotate in the same instant, so the one that turns first genuinely mismatches for a moment
+  // before the other catches up. Popping a notice on that transient would train the user to ignore
+  // the notice that matters. The latch above prevents re-firing; only this window prevents the
+  // first, spurious fire.
+  pageflipMismatchSinceMs = millis();
 }
 
 void EpubReaderActivity::pageflipPump() {
@@ -1249,6 +1254,15 @@ void EpubReaderActivity::pageflipPump() {
   // Before anything is sent: the fingerprint has to describe the layout this device is actually
   // using, and this is also where the very first greeting goes out.
   pageflipRefreshCompat();
+
+  // A mismatch that outlived its settling window is a real one, so tell the user. Driven from here
+  // rather than from the receive path because a permanent mismatch produces no further packets to
+  // hang the check on -- the peer only re-greets when its own hash changes.
+  if (pageflipMismatchSinceMs != 0 && millis() - pageflipMismatchSinceMs >= MISMATCH_CONFIRM_MS) {
+    pageflipMismatchSinceMs = 0;
+    pendingPageflipMismatch = true;
+    requestUpdate();
+  }
 
   // Owed steps first: they are what a boundary crossing left behind, and the announce below must
   // report a settled position rather than a half-applied one.
@@ -1284,6 +1298,15 @@ void EpubReaderActivity::pageflipPump() {
     return;
   }
 
+  // Neither device can judge the layout until both have rendered once. Answer the greeting so the
+  // handshake completes, but pair on nothing: refreshCompat re-greets with the real hash the moment
+  // this device's first render lands, and the peer does the same, so agreement arrives a round
+  // later. Pairing here instead would license the two-step advance on a layout nobody has checked.
+  if (!decision.layoutDecided) {
+    if (decision.peerWantsReply) pageflipOweHelloAnswer = true;
+    return;
+  }
+
   // Reached only for a decoded packet from a compatible peer, which is what may hold this device
   // awake.
   lastPeerContactMs = millis();
@@ -1294,8 +1317,11 @@ void EpubReaderActivity::pageflipPump() {
     LOG_INF("ERS", "PageFlip peer present; turns now advance the pair by two");
   }
   // Re-arm the notice: the layouts agree again, so a later divergence is worth reporting afresh.
+  // Cancelling an unexpired window here is what makes the rotation case quiet -- the pair
+  // reconverges before the notice was ever due.
   if (pageflipCompatMismatch) {
     pageflipCompatMismatch = false;
+    pageflipMismatchSinceMs = 0;
     LOG_INF("ERS", "PageFlip peer layout compatible again");
   }
 

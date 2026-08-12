@@ -83,6 +83,11 @@ class EpubReaderActivity final : public Activity {
   bool pageflipCompatMismatch = false;
   // Consumed by render(), which owns the screen. The pump runs on the main task and must not draw.
   bool pendingPageflipMismatch = false;
+  // When the current mismatch was first seen, 0 when none is outstanding. The notice waits out this
+  // window so a pair mid-rotation -- briefly disagreeing because one device turned first -- does not
+  // pop one. Dropping the pairing is NOT delayed; only telling the user is.
+  unsigned long pageflipMismatchSinceMs = 0;
+  static constexpr unsigned long MISMATCH_CONFIRM_MS = 4000;
   // A greeting we owe an answer to. Latched rather than answered inline because the answer carries
   // this device's page, which cannot be read while a render is in flight -- and dropping the answer
   // would leave the peer waiting forever, since a greeting is sent once.
