@@ -761,6 +761,31 @@ hardware** by putting a transport shim behind the `lib/PageFlip` interface — U
 two simulator instances instead of ESP-NOW. The `sim-test` ScriptDriver can then drive both. Only
 steps 1, 6 and 7 genuinely need two X4s.
 
+Each instance takes a **slot**, set by environment variable, which fixes both the UDP port it
+listens on and the synthetic MAC it reports:
+
+```bash
+CROSSPOINT_PAGEFLIP_SLOT=0 ./program --script left.script    # binds 127.0.0.1:47190
+CROSSPOINT_PAGEFLIP_SLOT=1 ./program --script right.script   # binds 127.0.0.1:47191
+```
+
+`CROSSPOINT_PAGEFLIP_SLOTS` (default 2) and `CROSSPOINT_PAGEFLIP_PORT` (default 47190) override the
+count and base port. `broadcast()` sends to every slot but its own, because ESP-NOW does not loop a
+broadcast back to its sender and the protocol should not carry self-filtering that exists only for
+the shim. The MAC is `02:50:46:00:00:<slot>` — locally administered, stable across runs, and
+ordered by slot, so the lower-MAC tiebreak resolves identically on every scripted run.
+
+Two implementation notes worth not rediscovering:
+
+- **No `SO_REUSEADDR`.** UDP has no `TIME_WAIT`, so it buys nothing, and it would let two instances
+  launched with the *same* slot both bind the port — after which the kernel delivers each datagram
+  to only one of them and the pair looks intermittently deaf. Without it the second bind fails
+  loudly, which is the diagnosis worth having. (This was a real bug; the duplicate-slot unit test
+  is what caught it.)
+- **`recvfrom` uses `MSG_TRUNC`** so an oversized datagram is dropped whole rather than delivered as
+  its prefix. A truncated packet that still passed the length check would be a position applied from
+  half a message.
+
 ---
 
 ## 10. Fork vs branch
@@ -781,7 +806,7 @@ hard fork — worth keeping rebaseable rather than repeating the port-not-merge 
 | Transport | Purpose |
 |---|---|
 | **ESP-NOW** | the real thing — a thin wrapper over `freeink::nearby::EspNowTransport`, not a new implementation |
-| **UDP loopback** | two simulator instances. **Mandatory**, not a convenience: the SDK transport's `begin()` returns `false` under `SIMULATOR` |
+| **UDP loopback** | two simulator instances. **Mandatory**, not a convenience: the SDK transport's `begin()` returns `false` under `SIMULATOR`. Implemented: [PageFlipUdpTransport](../lib/PageFlip/PageFlipUdpTransport.h) |
 | **UART** | escape hatch if §7 fails |
 
 The abstraction is not speculative — the simulator shim needs it on day one regardless. But it
