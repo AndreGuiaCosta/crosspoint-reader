@@ -72,20 +72,29 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
     return true;
   }
 
-  decision.forward = incoming.forward;
   decision.spineIndex = incoming.spineIndex;
   decision.pageNumber = incoming.pageNumber;
   // Roles that differ are the normal pair, one page apart. Two devices configured with the same
   // role is a setup error the join negotiation catches (section 4); here it simply means no offset.
   decision.applyRoleOffset = incoming.role != role;
+  // Which way to step. For an advance it is the direction the turn travelled. For a heal it is
+  // NOT: the role offset is fixed by role, not by travel -- right is always left + 1 -- so the
+  // right device steps forward off the sender's position however the sender got there. Reading the
+  // sender's direction here would land a backward heal two pages out, and it would look like a
+  // boundary bug in advanceOnePage rather than a protocol one.
+  decision.forward = incoming.forward;
+  const bool roleOffsetForward = role == PageFlipRole::Right;
 
   // Both devices pressing in the same window independently compute the same turnSeq. Same
   // direction is harmless -- each ignores the other and the pair advances once, which is the whole
   // point of the counter. Opposite directions is the residual race, and it desyncs unless someone
   // yields, so the lower MAC wins and the loser heals from the winner's absolute position.
   if (hasLocalTurn && incoming.turnSeq == turnSeq && incoming.forward != lastLocalForward) {
+    // Winning leaves hasLocalTurn set on purpose: our turn stands, so a retransmission of the
+    // peer's losing packet must reach this same branch and be rejected the same way.
     if (winsTiebreakAgainst(senderMac)) return true;  // Ignore: the peer heals to us
     decision.action = PageFlipAction::Heal;
+    decision.forward = roleOffsetForward;
     hasLocalTurn = false;
     return true;
   }
@@ -103,5 +112,6 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
   turnSeq = incoming.turnSeq;
   hasLocalTurn = false;
   decision.action = isNextTurn ? PageFlipAction::AdvanceTwo : PageFlipAction::Heal;
+  if (!isNextTurn) decision.forward = roleOffsetForward;
   return true;
 }

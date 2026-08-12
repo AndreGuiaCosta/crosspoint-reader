@@ -24,7 +24,9 @@ enum class PageFlipAction : uint8_t {
 struct PageFlipDecision {
   PageFlipAction action = PageFlipAction::Ignore;
 
-  // AdvanceTwo: which way to step. Heal: which way the role offset below points.
+  // AdvanceTwo: the direction the turn travelled, to step twice.
+  // Heal: which way the role offset below points -- fixed by role, not by the sender's direction,
+  // because right is always left + 1 however the pair got there.
   bool forward = true;
 
   // Heal only: the sender's own resulting position. Seek here, then take one further step in

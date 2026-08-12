@@ -157,6 +157,47 @@ TEST_F(PageFlipSessionTest, MissedTurnsHealFromTheAbsolutePosition) {
   EXPECT_EQ(pair.right.getTurnSeq(), 3u);
 }
 
+// The heal offset is fixed by role, not by the direction the sender travelled: right is always
+// left + 1 however the pair got there. Reading the sender's direction instead lands a backward heal
+// two pages out -- and it presents as the right device showing the page BEFORE the left one, which
+// looks like a boundary bug in advanceOnePage rather than a protocol one.
+TEST_F(PageFlipSessionTest, BackwardHealStillOffsetsForwardOnTheRightDevice) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+
+  pair.right.end();
+  ASSERT_TRUE(pair.left.announceLocalTurn(false, 4, 6, false));
+  ASSERT_TRUE(pair.left.announceLocalTurn(false, 4, 4, false));
+
+  ASSERT_TRUE(startOnSlot(pair.rightTransport, "1"));
+  ASSERT_TRUE(pair.left.announceLocalTurn(false, 4, 2, false));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  ASSERT_EQ(decision.action, PageFlipAction::Heal);
+  EXPECT_TRUE(decision.applyRoleOffset);
+  EXPECT_TRUE(decision.forward) << "the right device is one page AHEAD of the left, always";
+}
+
+// ...and the mirror: the left device heals backward off the right device's position, even when the
+// turn that got them there was a forward one.
+TEST_F(PageFlipSessionTest, ForwardHealOffsetsBackwardOnTheLeftDevice) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+
+  pair.left.end();
+  ASSERT_TRUE(pair.right.announceLocalTurn(true, 1, 1, false));
+  ASSERT_TRUE(pair.right.announceLocalTurn(true, 1, 3, false));
+
+  ASSERT_TRUE(startOnSlot(pair.leftTransport, "0"));
+  ASSERT_TRUE(pair.right.announceLocalTurn(true, 1, 5, false));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.left, decision));
+  ASSERT_EQ(decision.action, PageFlipAction::Heal);
+  EXPECT_FALSE(decision.forward) << "the left device is one page BEHIND the right, always";
+}
+
 // Both devices pressing the same way in one window: each computes the same turnSeq, so each sees
 // the other as already applied. The pair advances once, not twice.
 TEST_F(PageFlipSessionTest, SimultaneousPressesInTheSameDirectionAdvanceOnce) {

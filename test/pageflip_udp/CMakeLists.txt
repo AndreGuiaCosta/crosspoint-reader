@@ -10,5 +10,7 @@ if(UNIX)
     GTest::gtest_main
   )
 
-  gtest_discover_tests(PageFlipUdpTransportTest)
+  # Binds fixed loopback ports and asserts that a duplicate bind fails, so it cannot share the
+  # ports with a concurrently running case. Without this, ctest -j turns into phantom failures.
+  gtest_discover_tests(PageFlipUdpTransportTest PROPERTIES RESOURCE_LOCK "pageflip-ports")
 endif()

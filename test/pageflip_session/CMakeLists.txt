@@ -11,5 +11,7 @@ if(UNIX)
     GTest::gtest_main
   )
 
-  gtest_discover_tests(PageFlipSessionTest)
+  # Every case here binds the same loopback ports, and the transport deliberately refuses a
+  # duplicate bind, so these must not run concurrently with each other or with the transport suite.
+  gtest_discover_tests(PageFlipSessionTest PROPERTIES RESOURCE_LOCK "pageflip-ports")
 endif()
