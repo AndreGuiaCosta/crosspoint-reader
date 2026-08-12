@@ -3,7 +3,10 @@ if(UNIX)
     PageFlipUdpTransportTest.cpp
     ${REPO_ROOT}/lib/PageFlip/PageFlipPacket.cpp
     ${REPO_ROOT}/lib/PageFlip/PageFlipUdpTransport.cpp
+    ${REPO_ROOT}/lib/PageFlip/PageFlipTransportFactory.cpp
   )
+
+  target_include_directories(PageFlipUdpTransportTest PRIVATE ${REPO_ROOT}/lib/Memory)
 
   target_link_libraries(PageFlipUdpTransportTest PRIVATE
     crosspoint_test_common

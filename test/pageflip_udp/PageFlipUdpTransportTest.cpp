@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "PageFlip/PageFlipPacket.h"
+#include "PageFlip/PageFlipTransportFactory.h"
 #include "PageFlip/PageFlipUdpTransport.h"
 
 namespace {
@@ -185,6 +186,24 @@ TEST_F(PageFlipUdpTransportTest, LocalMacIsStableAndOrderedBySlot) {
   ASSERT_TRUE(startOnSlot(left, "0")) << left.lastError();
   ASSERT_TRUE(left.localMac(afterRestart));
   EXPECT_EQ(std::memcmp(leftMac, afterRestart, sizeof(leftMac)), 0);
+}
+
+// The factory's host branch: anything above lib/PageFlip holds the interface and never names an
+// implementation, so this is what the reader will actually be given off-device.
+TEST_F(PageFlipUdpTransportTest, FactoryProducesAUsableHostTransport) {
+  ::setenv("CROSSPOINT_PAGEFLIP_PORT", TEST_BASE_PORT, 1);
+  ::setenv("CROSSPOINT_PAGEFLIP_SLOTS", "2", 1);
+  ::setenv("CROSSPOINT_PAGEFLIP_SLOT", "0", 1);
+
+  const std::unique_ptr<PageFlipTransport> transport = makePageFlipTransport();
+  ASSERT_NE(transport, nullptr);
+  ASSERT_TRUE(transport->begin());
+  EXPECT_TRUE(transport->isStarted());
+
+  uint8_t mac[PageFlipTransport::MAC_BYTES] = {};
+  EXPECT_TRUE(transport->localMac(mac));
+  transport->end();
+  EXPECT_FALSE(transport->isStarted());
 }
 
 // An out-of-range slot in the environment falls back to the default rather than binding somewhere

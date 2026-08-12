@@ -79,8 +79,9 @@ already give pairing a wire vocabulary.
 
 Two caveats found by reading the implementation, both of which matter later:
 
-- **It is not in the build.** `platformio.ini:128-139` symlinks twelve SDK libs; `NearbyTransfer`
-  is not among them. Adding it is a one-line `lib_deps` entry, not a port.
+- **It was not in the build.** `platformio.ini` symlinked twelve SDK libs and `NearbyTransfer` was
+  not among them. Now added — a one-line `lib_deps` entry, as expected, not a port. It costs ~11 KB
+  of flash and only compiles when something includes the wrapper.
 - **`begin()` returns `false` under `SIMULATOR`** — the whole body is inside
   `#if defined(ARDUINO_ARCH_ESP32) && !defined(SIMULATOR)`, with `#else return false`
   ([NearbyTransfer.cpp:155-157](../freeink-sdk/libs/network/NearbyTransfer/src/NearbyTransfer.cpp)).
@@ -93,6 +94,9 @@ Two caveats found by reading the implementation, both of which matter later:
   and 4.4 KB is affordable), and the honest options if it ever is: hold it only while pairing is
   active, or call `esp_now_register_recv_cb` directly from the ESP-NOW implementation of the §11
   interface and keep a 4×64 B queue. Do not fork the SDK library to shrink the constant.
+  **Taken: the first one.** `PageFlipEspNowTransport` holds the SDK transport and its receive
+  scratch (~5 KB together) behind a pointer that exists only between `begin()` and `end()`, so a
+  device reading solo pays nothing. Both are far too large to be stack locals in any case.
 
 ### Verified APIs (checked in the prebuilt C3 framework, not from memory)
 
@@ -724,7 +728,7 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
 
 | Concern | Location |
 |---|---|
-| Transport | wrap `freeink::nearby::EspNowTransport`; add `NearbyTransfer=symlink://freeink-sdk/libs/network/NearbyTransfer` to `platformio.ini` (absent today, see :128-139) |
+| Transport | ✅ `PageFlipEspNowTransport` wraps `freeink::nearby::EspNowTransport`; `NearbyTransfer` symlinked in `platformio.ini`. `makePageFlipTransport()` picks it or the UDP shim by platform |
 | Protocol + policy | new `lib/PageFlip/` |
 | Per-frame pump | `loop()` after `gpio.update()`, [main.cpp:465](../src/main.cpp) |
 | Local press: advance 2, broadcast | `EpubReaderActivity::pageTurn()` / `advanceOnePage()`, line 1040 |
@@ -811,7 +815,7 @@ hard fork — worth keeping rebaseable rather than repeating the port-not-merge 
 
 | Transport | Purpose |
 |---|---|
-| **ESP-NOW** | the real thing — a thin wrapper over `freeink::nearby::EspNowTransport`, not a new implementation |
+| **ESP-NOW** | the real thing — a thin wrapper over `freeink::nearby::EspNowTransport`, not a new implementation. Implemented: [PageFlipEspNowTransport](../lib/PageFlip/PageFlipEspNowTransport.h). Compiles and links on device; **unmeasured on hardware** |
 | **UDP loopback** | two simulator instances. **Mandatory**, not a convenience: the SDK transport's `begin()` returns `false` under `SIMULATOR`. Implemented: [PageFlipUdpTransport](../lib/PageFlip/PageFlipUdpTransport.h) |
 | **UART** | escape hatch if §7 fails |
 
