@@ -158,6 +158,10 @@ void EpubReaderActivity::onEnter() {
     return;
   }
 
+#ifdef FREEINK_CAP_PAGEFLIP
+  pageflipBegin();
+#endif
+
   ImageBlock::clearSessionRenderFailures();
   // Lazy image extraction: section builds only header-probe images, so the first
   // render of an image page pulls the file out of the EPUB through this hook.
@@ -220,6 +224,10 @@ void EpubReaderActivity::onEnter() {
 
 void EpubReaderActivity::onExit() {
   Activity::onExit();
+
+#ifdef FREEINK_CAP_PAGEFLIP
+  pageflipEnd();
+#endif
 
   // The extractor holds a raw pointer to this activity's epub; drop it before
   // the activity (and the shared_ptr) goes away.
@@ -327,6 +335,12 @@ void EpubReaderActivity::loop() {
     finish();
     return;
   }
+
+#ifdef FREEINK_CAP_PAGEFLIP
+  // Pumped before anything else this frame so a peer's turn lands in the same pass a local press
+  // would have, and so steps owed from a boundary crossing settle before the page is drawn.
+  pageflipPump();
+#endif
 
   // Idle glyph prewarm for the likely next page (currentPage + 1). The scan
   // pass draws nothing (FCM scan mode suppresses pixels), so the displayed
@@ -1077,10 +1091,153 @@ bool EpubReaderActivity::advanceOnePage(bool isForwardTurn) {
 }
 
 void EpubReaderActivity::pageTurn(bool isForwardTurn) {
+#ifdef FREEINK_CAP_PAGEFLIP
+  if (pageflip && pageflipPeerPresent) {
+    // Paired: this device owns its own position and advances it by two, so the peer's page never
+    // has to be computed from ours -- and a press on either device turns the spread the same way.
+    announceWhenSettled = true;
+    applyAdvance(isForwardTurn, 2);
+    lastPageTurnTime = millis();
+    requestUpdate();
+    return;
+  }
+#endif
   advanceOnePage(isForwardTurn);
   lastPageTurnTime = millis();
   requestUpdate();
 }
+
+#ifdef FREEINK_CAP_PAGEFLIP
+void EpubReaderActivity::applyAdvance(bool forward, uint8_t steps) {
+  pendingAdvanceForward = forward;
+  pendingAdvanceSteps = steps;
+  consumePendingAdvance();
+}
+
+void EpubReaderActivity::consumePendingAdvance() {
+  while (pendingAdvanceSteps > 0 && section) {
+    --pendingAdvanceSteps;
+    // A boundary crossing unloads the section: the rest is owed until render() has loaded the
+    // neighbour, because the landing page does not exist yet to step from.
+    if (!advanceOnePage(pendingAdvanceForward)) return;
+  }
+}
+
+void EpubReaderActivity::pageflipHealTo(const PageFlipDecision& decision) {
+  {
+    // Same care as a chapter jump: the section must not be dropped mid-render.
+    RenderLock lock(*this);
+    currentSpineIndex = decision.spineIndex;
+    nextPageNumber = decision.pageNumber;
+    pendingPageJump.reset();
+    section.reset();
+  }
+  // The role offset is a step, not arithmetic: a section boundary may sit between the peer's page
+  // and ours. It is applied by the pump once the section is back.
+  pendingAdvanceForward = decision.forward;
+  pendingAdvanceSteps = decision.applyRoleOffset ? 1 : 0;
+  requestUpdate();
+}
+
+void EpubReaderActivity::pageflipBegin() {
+  if (!epub) return;
+
+  pageflipTransport = makePageFlipTransport();
+  if (!pageflipTransport) {
+    LOG_ERR("ERS", "OOM: PageFlip transport");
+    return;
+  }
+  auto session = makeUniqueNoThrow<PageFlipSession>(*pageflipTransport, defaultPageFlipRole());
+  if (!session) {
+    LOG_ERR("ERS", "OOM: PageFlip session");
+    pageflipTransport.reset();
+    return;
+  }
+  if (!session->begin()) {
+    // No link is the ordinary solo case, not a failure: reading must never wait on the pair.
+    LOG_INF("ERS", "PageFlip link unavailable, reading solo");
+    pageflipTransport.reset();
+    return;
+  }
+
+  // The cache path already embeds the path hash the rest of the reader identifies a book by.
+  // TODO(section 5, phase 3): compatHash belongs here, derived from ReaderRenderSpec. Zero until
+  // then means two devices always agree on layout, which is only safe while both run this build.
+  session->setBook(static_cast<uint32_t>(std::hash<std::string>{}(epub->getCachePath())), 0);
+  pageflip = std::move(session);
+  // Greet whoever is out there. No answer simply means solo reading, which is why nothing waits on
+  // this: the reader carries on at one page per press until a peer speaks up.
+  pageflip->announceHello(currentSpineIndex, nextPageNumber, true);
+  LOG_INF("ERS", "PageFlip link up as %s, waiting for a peer", defaultPageFlipRole() == PageFlipRole::Left ? "left" : "right");
+}
+
+void EpubReaderActivity::pageflipEnd() {
+  pageflip.reset();
+  pageflipTransport.reset();  // releases the radio state: a solo reader pays nothing for the link
+  pendingAdvanceSteps = 0;
+  announceWhenSettled = false;
+  pageflipPeerPresent = false;
+}
+
+void EpubReaderActivity::pageflipPump() {
+  if (!pageflip) return;
+
+  // Owed steps first: they are what a boundary crossing left behind, and the announce below must
+  // report a settled position rather than a half-applied one.
+  if (pendingAdvanceSteps > 0 && section && !RenderLock::peek()) {
+    consumePendingAdvance();
+    requestUpdate();
+  }
+
+  if (announceWhenSettled && pendingAdvanceSteps == 0 && section) {
+    announceWhenSettled = false;
+    // Same test loop() uses. The flag tells the peer to show the end panel rather than a page it
+    // does not have (section 3, end of book).
+    const bool atEnd = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
+    pageflip->announceLocalTurn(pendingAdvanceForward, currentSpineIndex, section->currentPage, atEnd);
+  }
+
+  PageFlipDecision decision;
+  if (!pageflip->poll(decision)) return;
+
+  // Reached only for a decoded packet from a paired peer, which is what may hold this device awake.
+  lastPeerContactMs = millis();
+  // Any decoded packet proves a peer, not just a greeting: a turn arriving from a device that
+  // booted before this one is equally good evidence.
+  if (!pageflipPeerPresent) {
+    pageflipPeerPresent = true;
+    LOG_INF("ERS", "PageFlip peer present; turns now advance the pair by two");
+  }
+
+  switch (decision.action) {
+    case PageFlipAction::AdvanceTwo:
+      applyAdvance(decision.forward, 2);
+      // A step that crossed a section boundary leaves the section unloaded and the rest owed, so
+      // report the owed count rather than a page number that does not exist yet.
+      LOG_DBG("ERS", "PageFlip peer turn %s -> spine %d page %d, %u owed", decision.forward ? "fwd" : "back",
+              currentSpineIndex, section ? section->currentPage : -1, static_cast<unsigned>(pendingAdvanceSteps));
+      requestUpdate();
+      break;
+    case PageFlipAction::Heal:
+      pageflipHealTo(decision);
+      LOG_DBG("ERS", "PageFlip heal -> spine %d page %d", decision.spineIndex, decision.pageNumber);
+      break;
+    case PageFlipAction::PeerHello:
+      // Answer a greeting once. The answer asks for nothing back, so the exchange ends after two
+      // packets instead of two devices greeting each other forever.
+      if (decision.peerWantsReply) {
+        pageflip->announceHello(currentSpineIndex, section ? section->currentPage : nextPageNumber, false);
+      }
+      break;
+    case PageFlipAction::Mismatch:
+      // Detect and report only, per phase 3; the repair flow (section 5.1) is phase 4.
+      LOG_ERR("ERS", "PageFlip peer has an incompatible layout; not applying its position");
+      break;
+    case PageFlipAction::Ignore:
+      break;
+  }
+}
+#endif
 
 // TODO: Failure handling
 void EpubReaderActivity::render(RenderLock&& lock) {

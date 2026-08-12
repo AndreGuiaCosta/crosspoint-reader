@@ -40,6 +40,24 @@ struct PageFlipTurn {
   bool atBookEnd = false;
 };
 
+// A presence greeting. Same 25 bytes as a turn -- only `message` and the meaning of one flag
+// differ -- because a device has to answer the same questions either way: who am I, what am I
+// reading, and how far along is the pair's turn counter.
+//
+// Presence is not optional politeness: "the link came up" is not "a peer is there", and a device
+// that advanced by two without a peer would turn two pages per press on its own.
+struct PageFlipHello {
+  uint32_t compatHash = 0;
+  uint32_t bookId = 0;
+  uint32_t turnSeq = 0;   // the join adopts max(local, peer) from this
+  int32_t spineIndex = 0; // where this device currently is
+  int32_t pageNumber = 0;
+  PageFlipRole role = PageFlipRole::Left;
+  // A greeting asks for an answer; an answer does not, which is what stops two devices greeting
+  // each other forever. Rides the same flag bit a turn uses for direction.
+  bool wantsReply = true;
+};
+
 namespace PageFlipPacket {
 
 inline constexpr uint16_t MAGIC = 0x4650;  // 'PF', little-endian on the wire
@@ -56,6 +74,10 @@ bool encodeTurn(const PageFlipTurn& turn, uint8_t* output, size_t capacity, size
 // can extend the packet without breaking older receivers. Returns false and leaves `turn`
 // untouched on rejection.
 bool decodeTurn(const uint8_t* data, size_t length, PageFlipTurn& turn);
+
+// Same wire layout as a turn, so both share one set of field offsets.
+bool encodeHello(const PageFlipHello& hello, uint8_t* output, size_t capacity, size_t& outputLength);
+bool decodeHello(const uint8_t* data, size_t length, PageFlipHello& hello);
 
 // Peeks the message type without validating the rest, so a receive loop can dispatch before
 // decoding. Returns false when the buffer is not a PageFlip packet at all.

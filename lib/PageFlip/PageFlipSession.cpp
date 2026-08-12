@@ -47,6 +47,22 @@ bool PageFlipSession::announceLocalTurn(bool forward, int32_t spineIndex, int32_
   return transport.broadcast(wire, wireLength);
 }
 
+bool PageFlipSession::announceHello(int32_t spineIndex, int32_t pageNumber, bool wantsReply) {
+  PageFlipHello hello;
+  hello.compatHash = compatHash;
+  hello.bookId = bookId;
+  hello.turnSeq = turnSeq;
+  hello.spineIndex = spineIndex;
+  hello.pageNumber = pageNumber;
+  hello.role = role;
+  hello.wantsReply = wantsReply;
+
+  uint8_t wire[PageFlipTransport::MAX_PAYLOAD_BYTES];
+  size_t wireLength = 0;
+  if (!PageFlipPacket::encodeHello(hello, wire, sizeof(wire), wireLength)) return false;
+  return transport.broadcast(wire, wireLength);
+}
+
 bool PageFlipSession::poll(PageFlipDecision& decision) {
   uint8_t buffer[PageFlipTransport::MAX_PAYLOAD_BYTES];
   size_t length = 0;
@@ -57,12 +73,29 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
   // what keeps a stray broadcaster on the channel from holding the device awake (section 4).
   PageFlipMessage message = PageFlipMessage::Turn;
   if (!PageFlipPacket::peekMessage(buffer, length, message)) return false;
-  if (message != PageFlipMessage::Turn) return false;  // Hello belongs to the join, not implemented
+
+  decision = PageFlipDecision{};
+
+  if (message == PageFlipMessage::Hello) {
+    PageFlipHello hello;
+    if (!PageFlipPacket::decodeHello(buffer, length, hello)) return false;
+    if (hello.bookId != bookId) return true;  // a peer on another book is present but irrelevant
+
+    // Adopting the peer's counter is what the greeting is for. A cold boot resets turnSeq, and
+    // without adoption the rebooted device's presses would all look "already applied" to an awake
+    // peer -- its presses would do nothing at all, permanently, while the reverse direction
+    // appeared to work.
+    adoptTurnSeq(hello.turnSeq);
+    decision.action = PageFlipAction::PeerHello;
+    decision.peerWantsReply = hello.wantsReply;
+    decision.spineIndex = hello.spineIndex;
+    decision.pageNumber = hello.pageNumber;
+    decision.applyRoleOffset = hello.role != role;
+    return true;
+  }
 
   PageFlipTurn incoming;
   if (!PageFlipPacket::decodeTurn(buffer, length, incoming)) return false;
-
-  decision = PageFlipDecision{};
 
   // A peer reading a different book is alive but has nothing to say about this one.
   if (incoming.bookId != bookId) return true;

@@ -5,6 +5,11 @@
 
 #include <optional>
 
+#ifdef FREEINK_CAP_PAGEFLIP
+#include <PageFlipSession.h>
+#include <PageFlipTransportFactory.h>
+#endif
+
 #include "BookmarkEntry.h"
 #include "EndOfBookOptions.h"
 #include "EpubReaderMenuActivity.h"
@@ -47,6 +52,29 @@ class EpubReaderActivity final : public Activity {
   // which recovers a transiently corrupt cache; capped so a persistently bad page can't spin forever.
   uint8_t pageLoadRetryCount = 0;
   static constexpr uint8_t MAX_PAGE_LOAD_RETRIES = 3;
+#ifdef FREEINK_CAP_PAGEFLIP
+  // Paired reading: this device and its peer are one two-page spread, so a turn advances each of
+  // them by two (docs/pageflip.md section 3). Declared before the session, which holds a reference
+  // to it -- members are destroyed in reverse order, so the session goes first.
+  std::unique_ptr<PageFlipTransport> pageflipTransport;
+  std::unique_ptr<PageFlipSession> pageflip;
+  // Steps still owed to the advance in progress. A step that crosses a section boundary unloads
+  // the section, and the landing page is unknown until render() has loaded the neighbouring one,
+  // so the remainder waits rather than dereferencing a section that is not there.
+  uint8_t pendingAdvanceSteps = 0;
+  bool pendingAdvanceForward = true;
+  // Broadcast the local turn only once its steps have settled, so the position on the wire is the
+  // page actually being shown rather than a half-applied one.
+  bool announceWhenSettled = false;
+  unsigned long lastPeerContactMs = 0;
+  // A started link is not a peer. Until one answers, this device reads exactly as it does today --
+  // one page per press -- because a lone device advancing by two would turn two pages on every
+  // press, which is the whole feature going wrong in the most visible way possible.
+  bool pageflipPeerPresent = false;
+  // A device being read from but not pressed sees no input of its own, so peer traffic has to keep
+  // it awake. Only decoded packets count -- see the receive path.
+  static constexpr unsigned long PEER_ACTIVITY_WINDOW_MS = 3000;
+#endif
   bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
   bool automaticPageTurnActive = false;
   bool showBookmarkMessage = false;
@@ -192,6 +220,21 @@ class EpubReaderActivity final : public Activity {
   // stepping more than once must defer the rest rather than call again immediately.
   bool advanceOnePage(bool isForwardTurn);
   void pageTurn(bool isForwardTurn);
+#ifdef FREEINK_CAP_PAGEFLIP
+  // Brings the pair link up for this book, or leaves the reader solo if it cannot start. Reading
+  // never blocks on the peer.
+  void pageflipBegin();
+  void pageflipEnd();
+  // Pumped once per frame: drains owed steps, announces a settled local turn, applies one peer
+  // packet.
+  void pageflipPump();
+  // Queues `steps` single-page steps and applies as many as can be applied right now.
+  void applyAdvance(bool forward, uint8_t steps);
+  void consumePendingAdvance();
+  // Seeks to the peer's absolute position, then owes one further step when the roles differ -- the
+  // pair is one page apart and that page is only knowable by stepping, not by arithmetic.
+  void pageflipHealTo(const PageFlipDecision& decision);
+#endif
   void loadCachedBookmarks();
   void addBookmark();
   void updateBookmarkFlag();
@@ -218,6 +261,13 @@ class EpubReaderActivity final : public Activity {
   // speed would only burn battery; the paused gate still retries every loop pass).
   bool skipLoopDelay() override { return section && section->isBuilding() && !buildHeapPaused; }
   bool isReaderActivity() const override { return true; }
+#ifdef FREEINK_CAP_PAGEFLIP
+  // The peer's traffic is this device's activity: it is being read from, just not pressed, and
+  // today's inactivity timer would otherwise sleep it out from under the reader.
+  bool preventAutoSleep() override {
+    return pageflip && lastPeerContactMs != 0 && millis() - lastPeerContactMs < PEER_ACTIVITY_WINDOW_MS;
+  }
+#endif
   bool handleForcedRefresh() override {
     {
       RenderLock lock(*this);

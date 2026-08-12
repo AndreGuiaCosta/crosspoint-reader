@@ -53,6 +53,14 @@ sockaddr_in loopbackAddress(uint16_t port) {
 
 }  // namespace
 
+uint8_t PageFlipUdpTransport::readConfiguredSlotCount() {
+  return static_cast<uint8_t>(readEnvNumber("CROSSPOINT_PAGEFLIP_SLOTS", DEFAULT_SLOT_COUNT, 2, MAX_SLOT_COUNT));
+}
+
+uint8_t PageFlipUdpTransport::readConfiguredSlot() {
+  return static_cast<uint8_t>(readEnvNumber("CROSSPOINT_PAGEFLIP_SLOT", 0, 0, readConfiguredSlotCount() - 1));
+}
+
 PageFlipUdpTransport::~PageFlipUdpTransport() { end(); }
 
 void PageFlipUdpTransport::setError(const char* format, ...) {
@@ -66,8 +74,8 @@ bool PageFlipUdpTransport::begin() {
   if (isStarted()) return true;
   errorText[0] = '\0';
 
-  slotCount = static_cast<uint8_t>(readEnvNumber("CROSSPOINT_PAGEFLIP_SLOTS", DEFAULT_SLOT_COUNT, 2, MAX_SLOT_COUNT));
-  slot = static_cast<uint8_t>(readEnvNumber("CROSSPOINT_PAGEFLIP_SLOT", 0, 0, slotCount - 1));
+  slotCount = readConfiguredSlotCount();
+  slot = readConfiguredSlot();
   basePort =
       static_cast<uint16_t>(readEnvNumber("CROSSPOINT_PAGEFLIP_PORT", DEFAULT_BASE_PORT, 1024, 65535 - MAX_SLOT_COUNT));
 

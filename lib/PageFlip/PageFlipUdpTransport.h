@@ -42,6 +42,12 @@ class PageFlipUdpTransport final : public PageFlipTransport {
 
   uint8_t getSlot() const { return slot; }
 
+  // The configured slot, readable without binding anything. The transport factory uses it to give
+  // two simulator instances opposite roles straight from their launch environment; begin() applies
+  // the same value.
+  static uint8_t readConfiguredSlot();
+  static uint8_t readConfiguredSlotCount();
+
   // Why the last begin()/poll() failed, for the caller to log. The transport deliberately does no
   // logging of its own: Logging.h pulls in Arduino.h, and keeping this translation unit free of it
   // is what lets the host unit tests drive real sockets. Empty when nothing has failed.

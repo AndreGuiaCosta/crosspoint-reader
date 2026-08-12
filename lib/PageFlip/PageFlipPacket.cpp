@@ -63,29 +63,62 @@ bool hasPageFlipHeader(const uint8_t* data, size_t length) {
   return data[OFF_VERSION] == PageFlipPacket::PROTOCOL_VERSION;
 }
 
+// Turns and hellos carry the same fields in the same places; only the message byte and the meaning
+// of the second flag bit differ. One writer keeps the two from drifting apart.
+bool encodeCommon(uint8_t* output, size_t capacity, size_t& outputLength, PageFlipMessage message, uint8_t flags,
+                  uint32_t compatHash, uint32_t bookId, uint32_t turnSeq, int32_t spineIndex, int32_t pageNumber) {
+  if (output == nullptr || capacity < PageFlipPacket::TURN_BYTES) return false;
+
+  writeU16(output + OFF_MAGIC, PageFlipPacket::MAGIC);
+  output[OFF_VERSION] = PageFlipPacket::PROTOCOL_VERSION;
+  output[OFF_MESSAGE] = static_cast<uint8_t>(message);
+  output[OFF_FLAGS] = flags;
+  writeU32(output + OFF_COMPAT_HASH, compatHash);
+  writeU32(output + OFF_BOOK_ID, bookId);
+  writeU32(output + OFF_TURN_SEQ, turnSeq);
+  writeI32(output + OFF_SPINE_INDEX, spineIndex);
+  writeI32(output + OFF_PAGE_NUMBER, pageNumber);
+
+  outputLength = PageFlipPacket::TURN_BYTES;
+  return true;
+}
+
 }  // namespace
 
 namespace PageFlipPacket {
 
 bool encodeTurn(const PageFlipTurn& turn, uint8_t* output, size_t capacity, size_t& outputLength) {
-  if (output == nullptr || capacity < TURN_BYTES) return false;
-
   uint8_t flags = 0;
   if (turn.role == PageFlipRole::Right) flags |= FLAG_ROLE_RIGHT;
   if (!turn.forward) flags |= FLAG_BACKWARD;
   if (turn.atBookEnd) flags |= FLAG_AT_BOOK_END;
+  return encodeCommon(output, capacity, outputLength, PageFlipMessage::Turn, flags, turn.compatHash, turn.bookId,
+                      turn.turnSeq, turn.spineIndex, turn.pageNumber);
+}
 
-  writeU16(output + OFF_MAGIC, MAGIC);
-  output[OFF_VERSION] = PROTOCOL_VERSION;
-  output[OFF_MESSAGE] = static_cast<uint8_t>(PageFlipMessage::Turn);
-  output[OFF_FLAGS] = flags;
-  writeU32(output + OFF_COMPAT_HASH, turn.compatHash);
-  writeU32(output + OFF_BOOK_ID, turn.bookId);
-  writeU32(output + OFF_TURN_SEQ, turn.turnSeq);
-  writeI32(output + OFF_SPINE_INDEX, turn.spineIndex);
-  writeI32(output + OFF_PAGE_NUMBER, turn.pageNumber);
+bool encodeHello(const PageFlipHello& hello, uint8_t* output, size_t capacity, size_t& outputLength) {
+  uint8_t flags = 0;
+  if (hello.role == PageFlipRole::Right) flags |= FLAG_ROLE_RIGHT;
+  // The direction bit reads as "this is an answer" on a hello: a greeting sets wantsReply, so the
+  // bit is clear, and the answer sets the bit and is never answered in turn.
+  if (!hello.wantsReply) flags |= FLAG_BACKWARD;
+  return encodeCommon(output, capacity, outputLength, PageFlipMessage::Hello, flags, hello.compatHash, hello.bookId,
+                      hello.turnSeq, hello.spineIndex, hello.pageNumber);
+}
 
-  outputLength = TURN_BYTES;
+bool decodeHello(const uint8_t* data, size_t length, PageFlipHello& hello) {
+  if (!hasPageFlipHeader(data, length)) return false;
+  if (data[OFF_MESSAGE] != static_cast<uint8_t>(PageFlipMessage::Hello)) return false;
+  if (length < TURN_BYTES) return false;
+
+  const uint8_t flags = data[OFF_FLAGS];
+  hello.role = (flags & FLAG_ROLE_RIGHT) ? PageFlipRole::Right : PageFlipRole::Left;
+  hello.wantsReply = (flags & FLAG_BACKWARD) == 0;
+  hello.compatHash = readU32(data + OFF_COMPAT_HASH);
+  hello.bookId = readU32(data + OFF_BOOK_ID);
+  hello.turnSeq = readU32(data + OFF_TURN_SEQ);
+  hello.spineIndex = readI32(data + OFF_SPINE_INDEX);
+  hello.pageNumber = readI32(data + OFF_PAGE_NUMBER);
   return true;
 }
 

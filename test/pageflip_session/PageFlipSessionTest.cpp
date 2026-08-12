@@ -285,6 +285,49 @@ TEST_F(PageFlipSessionTest, AdoptedTurnSeqKeepsARebootedDeviceUsable) {
   EXPECT_EQ(decision.action, PageFlipAction::AdvanceTwo) << "a rebooted peer's press must still register";
 }
 
+// Presence is what licenses advancing by two. A link that came up is not a peer that is there, and
+// a lone device advancing by two would turn two pages on every press.
+TEST_F(PageFlipSessionTest, GreetingAnnouncesPresenceAndAdoptsTheCounter) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+
+  pair.left.adoptTurnSeq(847);
+  ASSERT_TRUE(pair.left.announceHello(3, 2, true));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::PeerHello);
+  EXPECT_TRUE(decision.peerWantsReply);
+  EXPECT_EQ(decision.spineIndex, 3);
+  EXPECT_TRUE(decision.applyRoleOffset);
+  EXPECT_EQ(pair.right.getTurnSeq(), 847u) << "the greeting carries the pair's counter";
+}
+
+// The answer must not itself be answered, or two devices greet each other forever.
+TEST_F(PageFlipSessionTest, AnswerToAGreetingAsksForNothingBack) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+
+  ASSERT_TRUE(pair.right.announceHello(1, 1, false));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.left, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::PeerHello);
+  EXPECT_FALSE(decision.peerWantsReply);
+}
+
+TEST_F(PageFlipSessionTest, GreetingForAnotherBookIsNotOurPeer) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  pair.left.setBook(0x1234u, COMPAT);
+
+  ASSERT_TRUE(pair.left.announceHello(0, 0, true));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::Ignore);
+}
+
 TEST_F(PageFlipSessionTest, SoloTurnsStillAdvanceTheCounter) {
   PageFlipUdpTransport transport;
   ASSERT_TRUE(startOnSlot(transport, "0"));

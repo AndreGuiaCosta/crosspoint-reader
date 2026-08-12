@@ -746,9 +746,15 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
 
 1. **Transport spike** — `lib/PageFlip` pair + send/recv, no reader integration. Two devices,
    measure round-trip latency and idle current. *Gate: does §7 hold?*
-2. **Position protocol** — ~~extract the single-step helper~~ (done: `advanceOnePage()`), add the
-   deferred second step, both sides advance 2, `turnSeq` dedup. Assume same book and matching
-   settings.
+2. ✅ **Position protocol** — `advanceOnePage()`, the deferred second step, both sides advance 2,
+   `turnSeq` dedup. Assumes same book and matching settings. Driven by two simulator instances:
+   `run_sim_pair.sh`.
+
+   **What this does not yet do: the two devices move in lockstep, showing the same page rather than
+   *P* and *P+1*.** The one-page offset is established by the join negotiation (§4.2), which is step
+   5 — role only feeds the heal offset until then. The pair test asserts the halves stay
+   byte-identical, and that assertion is a canary: when step 5 lands it must start failing, and be
+   replaced by "differs by exactly one page".
 3. **Compat hash** — §5, hashed from `ReaderRenderSpec` verbatim. Detect and report mismatch only,
    no repair yet.
 4. **Settings force-sync** — §5.1. The prompt-on-both / confirm-on-one gesture, the

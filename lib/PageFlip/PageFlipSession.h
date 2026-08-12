@@ -19,6 +19,7 @@ enum class PageFlipAction : uint8_t {
   AdvanceTwo,  // the expected next turn: step the local position twice, same direction
   Heal,        // turns were missed or the pair conflicted: seek absolutely instead of replaying
   Mismatch,    // same book, incompatible layout -- report it (section 5), never apply it
+  PeerHello,   // a peer announced itself: the pair is real, and turns may advance by two
 };
 
 struct PageFlipDecision {
@@ -35,6 +36,10 @@ struct PageFlipDecision {
   int32_t spineIndex = 0;
   int32_t pageNumber = 0;
   bool applyRoleOffset = false;
+
+  // PeerHello only: the greeting expects an answer. An answer does not, which is what keeps two
+  // devices from greeting each other forever.
+  bool peerWantsReply = false;
 };
 
 class PageFlipSession {
@@ -53,6 +58,12 @@ class PageFlipSession {
   // resulting position. Returns false if nothing could be sent (no peer yet) -- which is not an
   // error: reading must never block on the pair.
   bool announceLocalTurn(bool forward, int32_t spineIndex, int32_t pageNumber, bool atBookEnd);
+
+  // Says "I am here, reading this, my counter is at N". Sent when the reader opens the book and
+  // again as the answer to a peer's greeting. Presence has to be established before turns may
+  // advance by two: a link that came up is not a peer that is there, and a lone device advancing
+  // by two would turn two pages on every press.
+  bool announceHello(int32_t spineIndex, int32_t pageNumber, bool wantsReply);
 
   // Pumped once per frame. Returns true when a packet was received and `decision` was filled; the
   // decision may still be Ignore, which is not the same as "nothing arrived" -- only a decoded
