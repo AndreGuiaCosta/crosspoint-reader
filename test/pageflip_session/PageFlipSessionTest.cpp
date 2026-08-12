@@ -328,6 +328,42 @@ TEST_F(PageFlipSessionTest, GreetingForAnotherBookIsNotOurPeer) {
   EXPECT_EQ(decision.action, PageFlipAction::Ignore);
 }
 
+// The greeting is the earliest a layout difference can be caught, and the cheapest: catching it
+// only on the first turn means the pair registers as present, advances by two, and desyncs before
+// anyone is told.
+TEST_F(PageFlipSessionTest, GreetingWithADifferentLayoutIsAMismatch) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  pair.left.setBook(BOOK, COMPAT ^ 0xFFFFFFFFu);  // same book, a layout this device cannot match
+
+  ASSERT_TRUE(pair.left.announceHello(3, 2, true));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::Mismatch);
+  // The reply flag has to survive the mismatch: the answer carries this device's own hash, which is
+  // how the peer's user gets told too. One device reporting and the other silently doing nothing is
+  // worse than either device alone.
+  EXPECT_TRUE(decision.peerWantsReply);
+}
+
+// Adoption is deliberately not gated on compatibility. turnSeq is a session fact, not a layout one,
+// and skipping it here would leave the pair deadlocked at the moment force-sync made them
+// compatible -- the low-counter device's presses would all read as "already applied".
+TEST_F(PageFlipSessionTest, MismatchedGreetingStillAdoptsTheCounter) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  pair.left.setBook(BOOK, COMPAT ^ 0xFFFFFFFFu);
+  pair.left.adoptTurnSeq(847);
+
+  ASSERT_TRUE(pair.left.announceHello(0, 0, true));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  ASSERT_EQ(decision.action, PageFlipAction::Mismatch);
+  EXPECT_EQ(pair.right.getTurnSeq(), 847u);
+}
+
 TEST_F(PageFlipSessionTest, SoloTurnsStillAdvanceTheCounter) {
   PageFlipUdpTransport transport;
   ASSERT_TRUE(startOnSlot(transport, "0"));

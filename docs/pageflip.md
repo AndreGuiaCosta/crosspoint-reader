@@ -486,6 +486,20 @@ complete: anyone adding a render setting must add it here or the cache breaks, a
 it up for free. Note `viewportWidth/Height` already fold in orientation *and* margins, and
 `lineCompression` folds in font family + line spacing.
 
+Implemented: [PageFlipCompat](../lib/PageFlip/PageFlipCompat.h), FNV-1a, fields mixed a byte at a
+time little-end first (hashing the struct's raw bytes would fold in padding, which is not identical
+across compilers and would make two devices disagree for no reason). `SECTION_FILE_VERSION` is
+exposed as `Section::FILE_VERSION` so the number keeps one home rather than being copied.
+
+> **"Complete by construction" needs a mechanism — it is not free.** The claim above is true of the
+> *cache*, which compares fields explicitly, but a hand-enumerated hash silently omits any field
+> someone adds later. The obvious guard, `static_assert(sizeof(ReaderRenderSpec) == N)`, **does not
+> work**: the struct is 18 bytes of members padded to 20, so two more `bool` fields fit inside the
+> existing padding without changing its size, and would be missed. What does work is destructuring
+> the spec with a structured binding and hashing the resulting names — a binding must name every
+> member, so an eleventh field is a hard compile error regardless of padding. It is not a separate
+> tripwire that can drift from the hash; it *is* the hash's field source.
+
 ### `fontId` is already portable — hash it as-is
 
 An earlier draft of this document claimed `fontId` was a local, non-portable handle needing
@@ -524,7 +538,48 @@ Two caveats worth knowing, neither of which changes the conclusion:
 The hash rides in every packet (4 bytes) and is **recomputed on orientation change**, not just at
 pair time — that is what makes §4.4 fire.
 
+### Three things the implementation had to settle that this section did not
+
+**The viewport is a `render()` output, so the hash cannot be built when the link comes up.**
+`buildViewportWidth/Height` are captured inside `render()` and are zero until the first page has
+been laid out. So `pageflipBegin()` sets the hash to a `0` sentinel and sends **no greeting at
+all**: a hello advertising zero is a claim about a layout the device has not decided on, and would
+read as a mismatch to any peer that had already rendered. The first greeting goes out from
+`pageflipRefreshCompat()`, on the first pump where the viewport is known. Recomputing every pump —
+rather than hooking individual settings — is also what makes §4.4 fire for free, and it covers more
+than orientation: the automatic-page-turn toggle moves the bottom margin, so it genuinely
+re-paginates and genuinely changes the hash.
+
+**Detection belongs on the greeting, not on the first turn.** `Hello` carries `compatHash`, so the
+mismatch is caught before any position has been applied. An incompatible peer is still *answered*
+— the answer carries this device's own hash, which is how the other user gets told too. One device
+reporting the problem while the other silently does nothing is worse than either alone. The peer's
+`turnSeq` is adopted either way: it is a session fact, not a layout one, and skipping it would
+deadlock the pair at the moment §5.1 made them compatible.
+
+**A peer that is present is not a peer that is paired.** This is the substance of the phase.
+`pageflipPeerPresent` gates the two-step advance, and it must *not* be set by an incompatible peer:
+leaving it set means this device turns two pages per press while the peer rejects every one of
+them — the silent desync this section exists to prevent, dressed up as a working feature. Solo
+reading is wrong-but-usable; that pair would be wrong-and-invisible. A mismatching peer likewise
+does not refresh `lastPeerContactMs`, so it cannot hold the device awake through `preventAutoSleep`.
+
 Mismatch → do not sync silently. Offer §5.1.
+
+### Outgoing positions must be read under the render lock
+
+Every packet carries the page this device is showing, which means reading `section` — and `section`
+belongs to the render task, which assigns and resets it inside `render()` while holding the lock.
+Reading it from the pump unguarded is a use-after-free. It is not theoretical: the first version of
+the compat refresh did exactly that, and because the first hash is computed during the *first*
+render — the one building the very section it wants to describe — the left simulator half
+segfaulted on essentially every run. It did not reproduce under `gdb`, which is the tell.
+
+`pageflipSettledPage()` is the single guarded accessor: `RenderLock::peek()` first so the main task
+never blocks behind a page render, then an actual `RenderLock` for the read itself, because peek
+alone leaves the window open. Callers retry next pump. The greeting *answer* is latched into
+`pageflipOweHelloAnswer` rather than sent inline, because a greeting is sent once — dropping the
+answer because a render happened to be in flight would leave the peer waiting indefinitely.
 
 ---
 
@@ -755,8 +810,12 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
    5 — role only feeds the heal offset until then. The pair test asserts the halves stay
    byte-identical, and that assertion is a canary: when step 5 lands it must start failing, and be
    replaced by "differs by exactly one page".
-3. **Compat hash** — §5, hashed from `ReaderRenderSpec` verbatim. Detect and report mismatch only,
-   no repair yet.
+3. ✅ **Compat hash** — §5, hashed from `ReaderRenderSpec` verbatim. Detect and report mismatch only,
+   no repair yet: a one-shot popup, and the pair drops back to solo reading. Covered by
+   `test/pageflip_compat` (per-field coverage plus a pinned wire value) and by
+   `run_sim_pair_mismatch.sh`, the negative twin of the pair harness — it starts the right half with
+   a different `screenMargin` and asserts both halves report it, neither counts the other as
+   present, and the right half's page never moves under the left half's presses.
 4. **Settings force-sync** — §5.1. The prompt-on-both / confirm-on-one gesture, the
    `ReaderRenderSpec`-feeding subset, the two-phase preflight/abort with `findFamily()`, and the
    rebuild progress UI.

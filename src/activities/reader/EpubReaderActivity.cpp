@@ -1161,13 +1161,13 @@ void EpubReaderActivity::pageflipBegin() {
   }
 
   // The cache path already embeds the path hash the rest of the reader identifies a book by.
-  // TODO(section 5, phase 3): compatHash belongs here, derived from ReaderRenderSpec. Zero until
-  // then means two devices always agree on layout, which is only safe while both run this build.
-  session->setBook(static_cast<uint32_t>(std::hash<std::string>{}(epub->getCachePath())), 0);
+  pageflipBookId = static_cast<uint32_t>(std::hash<std::string>{}(epub->getCachePath()));
+  // The layout fingerprint stays at the not-computed sentinel until the first render fixes the
+  // viewport, and no greeting goes out before then: a hello carrying zero would claim a layout this
+  // device has not decided on, and would read as a mismatch to any peer that had already rendered.
+  // pageflipRefreshCompat() sends the first one.
+  session->setBook(pageflipBookId, 0);
   pageflip = std::move(session);
-  // Greet whoever is out there. No answer simply means solo reading, which is why nothing waits on
-  // this: the reader carries on at one page per press until a peer speaks up.
-  pageflip->announceHello(currentSpineIndex, nextPageNumber, true);
   LOG_INF("ERS", "PageFlip link up as %s, waiting for a peer", defaultPageFlipRole() == PageFlipRole::Left ? "left" : "right");
 }
 
@@ -1177,10 +1177,78 @@ void EpubReaderActivity::pageflipEnd() {
   pendingAdvanceSteps = 0;
   announceWhenSettled = false;
   pageflipPeerPresent = false;
+  pageflipCompatHash = 0;
+  pageflipCompatMismatch = false;
+  pendingPageflipMismatch = false;
+  pageflipOweHelloAnswer = false;
+}
+
+bool EpubReaderActivity::pageflipSettledPage(int& page) {
+  // peek() first so the main task never blocks behind a page render; the lock is then taken for the
+  // read itself, because peek() alone leaves the window open for render() to start and reset the
+  // section under us. Same shape as the deferred partial-extension start in loop().
+  if (RenderLock::peek()) return false;
+  RenderLock lock(*this);
+  page = section ? section->currentPage : nextPageNumber;
+  return true;
+}
+
+void EpubReaderActivity::pageflipRefreshCompat() {
+  // The viewport is a render() output, so the fingerprint cannot be built in pageflipBegin().
+  // Recomputing every pump also covers every later change without needing a hook per setting:
+  // orientation, margins, font, line spacing -- and the automatic-page-turn toggle, which moves the
+  // bottom margin and so genuinely does re-paginate. That breadth is the point of section 4.4.
+  if (!pageflip || buildViewportWidth == 0) return;
+
+  const uint32_t hash = computePageFlipCompatHash(SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight),
+                                                  pageflipBookId, Section::FILE_VERSION);
+  if (hash == pageflipCompatHash) return;
+
+  // Nothing is committed until the position can be read: the greeting and the stored hash have to
+  // go out together, so a render in flight defers the whole thing to the next pump.
+  int page = 0;
+  if (!pageflipSettledPage(page)) return;
+
+  pageflipCompatHash = hash;
+  pageflip->setBook(pageflipBookId, hash);
+  // Re-greet on every change, first one included: a hello carrying the previous hash is a claim
+  // about a layout this device no longer has. The mismatch latch is deliberately NOT cleared here
+  // -- it clears when a compatible peer actually answers, so the notice tracks the real state
+  // rather than re-firing on every setting the user touches.
+  pageflip->announceHello(currentSpineIndex, page, true);
+  LOG_DBG("ERS", "PageFlip layout hash %08X, re-greeting", static_cast<unsigned>(hash));
+}
+
+void EpubReaderActivity::pageflipReportMismatch(const PageFlipDecision& decision) {
+  // Answer a greeting even from an incompatible peer. The answer carries this device's hash, which
+  // is how the other user gets told too -- one device reporting the problem and the other silently
+  // doing nothing is a worse outcome than either device alone.
+  if (decision.peerWantsReply) pageflipOweHelloAnswer = true;
+
+  // Dropping presence is the substance of this phase. A peer that rejects our turns must not gate
+  // the two-step advance: leaving it set means this device turns two pages per press while the peer
+  // ignores every one of them, which is the silent desync section 5 exists to prevent. Solo reading
+  // is wrong-but-usable; that pair would be wrong-and-invisible.
+  if (pageflipPeerPresent) {
+    pageflipPeerPresent = false;
+    LOG_INF("ERS", "PageFlip peer no longer compatible; back to one page per press");
+  }
+  // Nor does an unusable peer hold this device awake: preventAutoSleep exists for a peer that is
+  // driving this one, and this peer cannot.
+  if (pageflipCompatMismatch) return;
+
+  pageflipCompatMismatch = true;
+  pendingPageflipMismatch = true;
+  LOG_ERR("ERS", "PageFlip peer has an incompatible layout; not pairing");
+  requestUpdate();
 }
 
 void EpubReaderActivity::pageflipPump() {
   if (!pageflip) return;
+
+  // Before anything is sent: the fingerprint has to describe the layout this device is actually
+  // using, and this is also where the very first greeting goes out.
+  pageflipRefreshCompat();
 
   // Owed steps first: they are what a boundary crossing left behind, and the announce below must
   // report a settled position rather than a half-applied one.
@@ -1189,24 +1257,46 @@ void EpubReaderActivity::pageflipPump() {
     requestUpdate();
   }
 
-  if (announceWhenSettled && pendingAdvanceSteps == 0 && section) {
+  int settledPage = 0;
+  if (announceWhenSettled && pendingAdvanceSteps == 0 && section && pageflipSettledPage(settledPage)) {
     announceWhenSettled = false;
     // Same test loop() uses. The flag tells the peer to show the end panel rather than a page it
     // does not have (section 3, end of book).
     const bool atEnd = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
-    pageflip->announceLocalTurn(pendingAdvanceForward, currentSpineIndex, section->currentPage, atEnd);
+    pageflip->announceLocalTurn(pendingAdvanceForward, currentSpineIndex, settledPage, atEnd);
+  }
+
+  // Owed greeting answer. Latched by the receive path below so the answer's position is read under
+  // the lock like every other outgoing position, and retried rather than dropped -- a greeting is
+  // sent once, so losing the answer leaves the peer waiting indefinitely.
+  if (pageflipOweHelloAnswer && pageflipSettledPage(settledPage)) {
+    pageflipOweHelloAnswer = false;
+    pageflip->announceHello(currentSpineIndex, settledPage, false);
   }
 
   PageFlipDecision decision;
   if (!pageflip->poll(decision)) return;
 
-  // Reached only for a decoded packet from a paired peer, which is what may hold this device awake.
+  // An incompatible peer is a peer, but not a pair. Handled before contact is recorded below, so it
+  // neither holds this device awake nor counts as presence.
+  if (decision.action == PageFlipAction::Mismatch) {
+    pageflipReportMismatch(decision);
+    return;
+  }
+
+  // Reached only for a decoded packet from a compatible peer, which is what may hold this device
+  // awake.
   lastPeerContactMs = millis();
   // Any decoded packet proves a peer, not just a greeting: a turn arriving from a device that
   // booted before this one is equally good evidence.
   if (!pageflipPeerPresent) {
     pageflipPeerPresent = true;
     LOG_INF("ERS", "PageFlip peer present; turns now advance the pair by two");
+  }
+  // Re-arm the notice: the layouts agree again, so a later divergence is worth reporting afresh.
+  if (pageflipCompatMismatch) {
+    pageflipCompatMismatch = false;
+    LOG_INF("ERS", "PageFlip peer layout compatible again");
   }
 
   switch (decision.action) {
@@ -1225,14 +1315,10 @@ void EpubReaderActivity::pageflipPump() {
     case PageFlipAction::PeerHello:
       // Answer a greeting once. The answer asks for nothing back, so the exchange ends after two
       // packets instead of two devices greeting each other forever.
-      if (decision.peerWantsReply) {
-        pageflip->announceHello(currentSpineIndex, section ? section->currentPage : nextPageNumber, false);
-      }
+      if (decision.peerWantsReply) pageflipOweHelloAnswer = true;
       break;
     case PageFlipAction::Mismatch:
-      // Detect and report only, per phase 3; the repair flow (section 5.1) is phase 4.
-      LOG_ERR("ERS", "PageFlip peer has an incompatible layout; not applying its position");
-      break;
+      break;  // returned above, before this device counted the peer as present
     case PageFlipAction::Ignore:
       break;
   }
@@ -1245,10 +1331,20 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     return;
   }
 
-  const auto showPendingSyncSaveError = [this]() {
-    if (!pendingSyncSaveError) return;
-    pendingSyncSaveError = false;
-    GUI.drawPopup(renderer, tr(STR_SAVE_PROGRESS_FAILED));
+  // One-shot notices raised outside render(), shown after the page they belong to has been drawn.
+  // Sharing one exit hook keeps two notices from drawing over each other in the same frame.
+  const auto showPendingNotice = [this]() {
+    if (pendingSyncSaveError) {
+      pendingSyncSaveError = false;
+      GUI.drawPopup(renderer, tr(STR_SAVE_PROGRESS_FAILED));
+      return;
+    }
+#ifdef FREEINK_CAP_PAGEFLIP
+    if (pendingPageflipMismatch) {
+      pendingPageflipMismatch = false;
+      GUI.drawPopup(renderer, tr(STR_PAGEFLIP_LAYOUT_MISMATCH));
+    }
+#endif
   };
 
   // A section build failure (e.g. an invalid/corrupt EPUB that fails XML parsing) leaves the
@@ -1278,7 +1374,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     endOfBookOptions.render(renderer, mappedInput);
     renderer.displayBuffer();
     automaticPageTurnActive = false;
-    showPendingSyncSaveError();
+    showPendingNotice();
     return;
   }
 
@@ -1588,7 +1684,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     renderStatusBar();
     renderer.displayBuffer();
     automaticPageTurnActive = false;
-    showPendingSyncSaveError();
+    showPendingNotice();
     return;
   }
 
@@ -1598,7 +1694,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     renderStatusBar();
     renderer.displayBuffer();
     automaticPageTurnActive = false;
-    showPendingSyncSaveError();
+    showPendingNotice();
     return;
   }
 
@@ -1625,11 +1721,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         renderer.clearScreen();
         renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_PAGE_LOAD_ERROR), true, EpdFontFamily::BOLD);
         renderer.displayBuffer();
-        showPendingSyncSaveError();
+        showPendingNotice();
         return;
       }
       requestUpdate();  // Try again after clearing cache
-      showPendingSyncSaveError();
+      showPendingNotice();
       return;
     }
     pageLoadRetryCount = 0;  // Reset the retry counter once a page loads cleanly
@@ -1658,7 +1754,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
   }
 
-  showPendingSyncSaveError();
+  showPendingNotice();
 
   if (pendingScreenshot) {
     pendingScreenshot = false;

@@ -86,11 +86,15 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
     // peer -- its presses would do nothing at all, permanently, while the reverse direction
     // appeared to work.
     adoptTurnSeq(hello.turnSeq);
-    decision.action = PageFlipAction::PeerHello;
     decision.peerWantsReply = hello.wantsReply;
     decision.spineIndex = hello.spineIndex;
     decision.pageNumber = hello.pageNumber;
     decision.applyRoleOffset = hello.role != role;
+    // The greeting is the earliest a layout difference can be seen and the cheapest place to see
+    // it: no position has been applied yet, so nothing has to be undone. Note the counter above is
+    // adopted either way -- turnSeq is a session fact, not a layout one, and skipping it would
+    // leave the pair deadlocked the moment force-sync (section 5.1) made them compatible.
+    decision.action = hello.compatHash == compatHash ? PageFlipAction::PeerHello : PageFlipAction::Mismatch;
     return true;
   }
 

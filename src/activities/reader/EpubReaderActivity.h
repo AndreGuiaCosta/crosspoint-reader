@@ -6,6 +6,7 @@
 #include <optional>
 
 #ifdef FREEINK_CAP_PAGEFLIP
+#include <PageFlipCompat.h>
 #include <PageFlipSession.h>
 #include <PageFlipTransportFactory.h>
 #endif
@@ -71,8 +72,23 @@ class EpubReaderActivity final : public Activity {
   // one page per press -- because a lone device advancing by two would turn two pages on every
   // press, which is the whole feature going wrong in the most visible way possible.
   bool pageflipPeerPresent = false;
+  // The path hash the rest of the reader identifies this book by, kept so the compatibility hash
+  // can be rebuilt whenever the layout changes without reopening the epub.
+  uint32_t pageflipBookId = 0;
+  // Layout fingerprint (docs/pageflip.md section 5). Zero means "not computed yet": the viewport is
+  // a render() output, so it is unknown until the first page has been laid out.
+  uint32_t pageflipCompatHash = 0;
+  // Latched so the notice fires on the transition into mismatch rather than on every packet, and
+  // so a later change back into agreement can re-arm it.
+  bool pageflipCompatMismatch = false;
+  // Consumed by render(), which owns the screen. The pump runs on the main task and must not draw.
+  bool pendingPageflipMismatch = false;
+  // A greeting we owe an answer to. Latched rather than answered inline because the answer carries
+  // this device's page, which cannot be read while a render is in flight -- and dropping the answer
+  // would leave the peer waiting forever, since a greeting is sent once.
+  bool pageflipOweHelloAnswer = false;
   // A device being read from but not pressed sees no input of its own, so peer traffic has to keep
-  // it awake. Only decoded packets count -- see the receive path.
+  // it awake. Only decoded packets from a compatible peer count -- see the receive path.
   static constexpr unsigned long PEER_ACTIVITY_WINDOW_MS = 3000;
 #endif
   bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
@@ -234,6 +250,18 @@ class EpubReaderActivity final : public Activity {
   // Seeks to the peer's absolute position, then owes one further step when the roles differ -- the
   // pair is one page apart and that page is only knowable by stepping, not by arithmetic.
   void pageflipHealTo(const PageFlipDecision& decision);
+  // Rebuilds the layout fingerprint from the viewport the last render actually used, and re-greets
+  // the peer when it changes. Called every pump because there is no single "settings changed" hook
+  // covering everything that moves the viewport.
+  void pageflipRefreshCompat();
+  // The page this device is actually showing, for the position field of an outgoing packet.
+  // Returns false while a render is in flight: `section` belongs to the render task, which assigns
+  // and resets it under the lock, so reading it unguarded is a use-after-free. Callers retry on the
+  // next pump rather than block the main task behind a full page render.
+  bool pageflipSettledPage(int& page);
+  // Drops back to solo reading and arms the notice. A peer that cannot apply our turns must not
+  // gate the two-step advance.
+  void pageflipReportMismatch(const PageFlipDecision& decision);
 #endif
   void loadCachedBookmarks();
   void addBookmark();
