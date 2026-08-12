@@ -1037,7 +1037,9 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
   }
 }
 
-void EpubReaderActivity::pageTurn(bool isForwardTurn) {
+// Moves the position one page, without touching the page-turn timer or requesting a render, so
+// callers that need several steps (or none of the turn bookkeeping) can reuse the boundary logic.
+bool EpubReaderActivity::advanceOnePage(bool isForwardTurn) {
   if (isForwardTurn) {
     // Advance within the section while there are (or may still be) more pages: either a built
     // page ahead, or the section is still building (windowed), in which case more pages exist
@@ -1054,6 +1056,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
         currentSpineIndex++;
         section.reset();
       }
+      return false;
     }
   } else {
     if (section->currentPage > 0) {
@@ -1067,8 +1070,14 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
         currentSpineIndex--;
         section.reset();
       }
+      return false;
     }
   }
+  return true;
+}
+
+void EpubReaderActivity::pageTurn(bool isForwardTurn) {
+  advanceOnePage(isForwardTurn);
   lastPageTurnTime = millis();
   requestUpdate();
 }

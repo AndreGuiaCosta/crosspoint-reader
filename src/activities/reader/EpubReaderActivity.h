@@ -184,6 +184,13 @@ class EpubReaderActivity final : public Activity {
   bool launchKOReaderSync();
   void applyOrientation(uint8_t orientation);
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
+  // Applies a single page step to the current position. Requires a loaded `section`, and takes
+  // the RenderLock itself when the step crosses a section boundary -- so it must not be called
+  // from render(), which holds that (non-recursive) lock for its whole body.
+  // Returns false when the step crossed a section boundary: the section is unloaded and the
+  // landing page is only known once render() has loaded the neighbouring one, so a caller
+  // stepping more than once must defer the rest rather than call again immediately.
+  bool advanceOnePage(bool isForwardTurn);
   void pageTurn(bool isForwardTurn);
   void loadCachedBookmarks();
   void addBookmark();
