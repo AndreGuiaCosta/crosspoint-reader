@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <thread>
 
@@ -424,6 +425,202 @@ TEST_F(PageFlipSessionTest, SoloTurnsStillAdvanceTheCounter) {
   solo.announceLocalTurn(true, 1, 1, false);
   solo.announceLocalTurn(true, 1, 2, false);
   EXPECT_EQ(solo.getTurnSeq(), 2u);
+}
+
+// --- settings force-sync (docs/pageflip.md section 5.1) ---
+
+// The two devices genuinely disagree, which is the only situation a force-sync exists for. The
+// source keeps COMPAT; the device being pushed to sits on something else until it applies.
+constexpr uint32_t OTHER_COMPAT = 0x5EED1234u;
+
+PageFlipRenderSettings sampleSettings() {
+  PageFlipRenderSettings settings;
+  settings.fontId = 99;
+  settings.viewportWidth = 760;
+  settings.viewportHeight = 430;
+  settings.fontFamily = 1;
+  settings.fontPointSize = 16;
+  settings.lineSpacing = 2;
+  settings.screenMargin = 20;
+  std::snprintf(settings.sdFontFamilyName, sizeof(settings.sdFontFamilyName), "Bookerly");
+  return settings;
+}
+
+// Drives the whole exchange in one place, because the interesting cases are all variations on it.
+struct DivergentPair : Pair {
+  bool startDivergent() {
+    if (!start()) return false;
+    right.setBook(BOOK, OTHER_COMPAT);
+    return true;
+  }
+};
+
+TEST_F(PageFlipSessionTest, OfferIsPreflightedBeforeAnythingIsCommitted) {
+  DivergentPair pair;
+  ASSERT_TRUE(pair.startDivergent());
+
+  const PageFlipRenderSettings offered = sampleSettings();
+  ASSERT_TRUE(pair.left.offerSettings(offered));
+  EXPECT_TRUE(pair.left.hasOutstandingOffer());
+
+  PageFlipDecision atPeer;
+  ASSERT_TRUE(pollWithRetry(pair.right, atPeer));
+  ASSERT_EQ(atPeer.action, PageFlipAction::SettingsOffer);
+  ASSERT_NE(atPeer.settings, nullptr);
+  EXPECT_STREQ(atPeer.settings->sdFontFamilyName, "Bookerly");
+  EXPECT_EQ(atPeer.settings->screenMargin, offered.screenMargin);
+  EXPECT_EQ(atPeer.peerRole, PageFlipRole::Left);
+
+  // The preflight says "applying this lands me on COMPAT", which is the source's own layout.
+  ASSERT_TRUE(pair.right.answerOffer(PageFlipSyncResult::Ok, COMPAT));
+
+  PageFlipDecision atSource;
+  ASSERT_TRUE(pollWithRetry(pair.left, atSource));
+  ASSERT_EQ(atSource.action, PageFlipAction::SettingsAnswer);
+  EXPECT_EQ(atSource.syncResult, PageFlipSyncResult::Ok);
+  EXPECT_EQ(atSource.peerRole, PageFlipRole::Right);
+
+  ASSERT_TRUE(pair.left.commitOffer());
+  EXPECT_FALSE(pair.left.hasOutstandingOffer());
+
+  PageFlipDecision applied;
+  ASSERT_TRUE(pollWithRetry(pair.right, applied));
+  ASSERT_EQ(applied.action, PageFlipAction::SettingsApply);
+  ASSERT_NE(applied.settings, nullptr);
+  // What is written is what was preflighted, not what a later packet claimed.
+  EXPECT_STREQ(applied.settings->sdFontFamilyName, "Bookerly");
+  EXPECT_EQ(applied.settings->fontPointSize, offered.fontPointSize);
+}
+
+// The abort case, and the reason the exchange has three steps: a device that cannot resolve the
+// font says so, and nothing is written anywhere.
+TEST_F(PageFlipSessionTest, RefusedOfferLeavesNothingToCommit) {
+  DivergentPair pair;
+  ASSERT_TRUE(pair.startDivergent());
+
+  ASSERT_TRUE(pair.left.offerSettings(sampleSettings()));
+  PageFlipDecision atPeer;
+  ASSERT_TRUE(pollWithRetry(pair.right, atPeer));
+  ASSERT_EQ(atPeer.action, PageFlipAction::SettingsOffer);
+
+  ASSERT_TRUE(pair.right.answerOffer(PageFlipSyncResult::MissingFont, 0));
+
+  PageFlipDecision atSource;
+  ASSERT_TRUE(pollWithRetry(pair.left, atSource));
+  ASSERT_EQ(atSource.action, PageFlipAction::SettingsAnswer);
+  EXPECT_EQ(atSource.syncResult, PageFlipSyncResult::MissingFont);
+  // The refusal ended it: there is nothing left to commit, on either side.
+  EXPECT_FALSE(pair.left.hasOutstandingOffer());
+  EXPECT_FALSE(pair.left.commitOffer());
+}
+
+// findFamily() succeeding is not the same as the two devices ending up laid out alike -- a
+// different file for the same family name resolves a different fontId. The hash is what decides, so
+// an Ok that does not converge must not be treated as one.
+TEST_F(PageFlipSessionTest, AnswerThatDoesNotConvergeIsNotOk) {
+  DivergentPair pair;
+  ASSERT_TRUE(pair.startDivergent());
+
+  ASSERT_TRUE(pair.left.offerSettings(sampleSettings()));
+  PageFlipDecision atPeer;
+  ASSERT_TRUE(pollWithRetry(pair.right, atPeer));
+  ASSERT_EQ(atPeer.action, PageFlipAction::SettingsOffer);
+
+  ASSERT_TRUE(pair.right.answerOffer(PageFlipSyncResult::Ok, OTHER_COMPAT));
+
+  PageFlipDecision atSource;
+  ASSERT_TRUE(pollWithRetry(pair.left, atSource));
+  ASSERT_EQ(atSource.action, PageFlipAction::SettingsAnswer);
+  EXPECT_EQ(atSource.syncResult, PageFlipSyncResult::Unknown);
+  EXPECT_FALSE(pair.left.hasOutstandingOffer());
+}
+
+// A commit is only ever honoured for the offer this device preflighted itself. Anything else would
+// write settings nobody checked.
+TEST_F(PageFlipSessionTest, ApplyForAnOfferNeverPreflightedIsIgnored) {
+  DivergentPair pair;
+  ASSERT_TRUE(pair.startDivergent());
+
+  PageFlipSyncApply forged;
+  forged.targetHash = COMPAT;
+  forged.bookId = BOOK;
+  forged.role = PageFlipRole::Left;
+  uint8_t wire[PageFlipTransport::MAX_PAYLOAD_BYTES];
+  size_t wireLength = 0;
+  ASSERT_TRUE(PageFlipPacket::encodeSyncApply(forged, wire, sizeof(wire), wireLength));
+  ASSERT_TRUE(pair.leftTransport.broadcast(wire, wireLength));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::Ignore);
+  EXPECT_EQ(decision.settings, nullptr);
+}
+
+// An offer names the layout the peer must reach, so a device that has not rendered has nothing to
+// offer -- and the sentinel it would advertise is not a layout.
+TEST_F(PageFlipSessionTest, OfferBeforeTheFirstRenderIsRefused) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  pair.left.setBook(BOOK, 0);
+
+  EXPECT_FALSE(pair.left.offerSettings(sampleSettings()));
+  EXPECT_FALSE(pair.left.hasOutstandingOffer());
+}
+
+// Both users confirming at once. Exactly one push must survive, or the two devices overwrite each
+// other and neither ends up where the user asked.
+TEST_F(PageFlipSessionTest, SimultaneousOffersResolveByLowerMac) {
+  DivergentPair pair;
+  ASSERT_TRUE(pair.startDivergent());
+
+  ASSERT_TRUE(pair.left.offerSettings(sampleSettings()));
+  ASSERT_TRUE(pair.right.offerSettings(sampleSettings()));
+
+  // Slot 0's MAC is the lower one, so the left device keeps its offer and ignores the other.
+  PageFlipDecision atLeft;
+  ASSERT_TRUE(pollWithRetry(pair.left, atLeft));
+  EXPECT_EQ(atLeft.action, PageFlipAction::Ignore);
+  EXPECT_TRUE(pair.left.hasOutstandingOffer());
+
+  // The loser drops its own offer and preflights the winner's.
+  PageFlipDecision atRight;
+  ASSERT_TRUE(pollWithRetry(pair.right, atRight));
+  EXPECT_EQ(atRight.action, PageFlipAction::SettingsOffer);
+  EXPECT_FALSE(pair.right.hasOutstandingOffer());
+}
+
+// Rotating or changing a setting mid-exchange moves this device's own layout, so the offer and any
+// answer to it are about something that no longer exists.
+TEST_F(PageFlipSessionTest, ChangingOurLayoutDropsAnOfferInFlight) {
+  DivergentPair pair;
+  ASSERT_TRUE(pair.startDivergent());
+
+  ASSERT_TRUE(pair.left.offerSettings(sampleSettings()));
+  PageFlipDecision atPeer;
+  ASSERT_TRUE(pollWithRetry(pair.right, atPeer));
+  ASSERT_EQ(atPeer.action, PageFlipAction::SettingsOffer);
+
+  pair.left.setBook(BOOK, 0x0BADF00Du);
+  EXPECT_FALSE(pair.left.hasOutstandingOffer());
+
+  // The answer to the abandoned offer is stale, not a verdict to act on.
+  ASSERT_TRUE(pair.right.answerOffer(PageFlipSyncResult::Ok, COMPAT));
+  PageFlipDecision atSource;
+  ASSERT_TRUE(pollWithRetry(pair.left, atSource));
+  EXPECT_EQ(atSource.action, PageFlipAction::Ignore);
+}
+
+TEST_F(PageFlipSessionTest, OfferForAnotherBookIsNotOurExchange) {
+  DivergentPair pair;
+  ASSERT_TRUE(pair.startDivergent());
+  pair.left.setBook(0xFEEDFACEu, COMPAT);
+
+  ASSERT_TRUE(pair.left.offerSettings(sampleSettings()));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::Ignore);
+  EXPECT_EQ(decision.settings, nullptr);
 }
 
 }  // namespace

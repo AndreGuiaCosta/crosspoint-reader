@@ -20,6 +20,10 @@ enum class PageFlipAction : uint8_t {
   Heal,        // turns were missed or the pair conflicted: seek absolutely instead of replaying
   Mismatch,    // same book, incompatible layout -- report it (section 5), never apply it
   PeerHello,   // a peer announced itself: the pair is real, and turns may advance by two
+  // The three steps of the settings force-sync (section 5.1), from the receiving side of each.
+  SettingsOffer,   // the peer wants to push its render settings: preflight them and answerOffer()
+  SettingsAnswer,  // our offer came back judged: commitOffer() on Ok, otherwise tell the user why
+  SettingsApply,   // the offer we preflighted was committed: write it and rebuild the layout
 };
 
 struct PageFlipDecision {
@@ -45,6 +49,19 @@ struct PageFlipDecision {
   // it does until its own first render has fixed the viewport. Comparing against that decides
   // nothing, so the packet must not be treated as agreement OR as a mismatch -- see poll().
   bool layoutDecided = true;
+
+  // SettingsOffer and SettingsApply: the settings to preflight, then to write. Points at storage the
+  // session owns, and is valid for as long as the caller is handling this decision -- long enough to
+  // evaluate or apply it, never long enough to keep.
+  const PageFlipRenderSettings* settings = nullptr;
+
+  // SettingsAnswer: how the push turned out, already checked against this device's own layout, so
+  // Ok here really does mean "committing this converges the pair".
+  PageFlipSyncResult syncResult = PageFlipSyncResult::Unknown;
+
+  // The peer's own role, so a message about it can name a device: "the right device has no font
+  // Bookerly". Distinct from applyRoleOffset, which only says whether the roles differ.
+  PageFlipRole peerRole = PageFlipRole::Left;
 };
 
 class PageFlipSession {
@@ -74,6 +91,26 @@ class PageFlipSession {
   // decision may still be Ignore, which is not the same as "nothing arrived" -- only a decoded
   // packet from the paired book counts as peer contact for the auto-sleep timer (section 4).
   bool poll(PageFlipDecision& decision);
+
+  // Settings force-sync (section 5.1). This device is the source: the user confirmed here, so these
+  // settings are the ones the pair adopts. Refuses before the first render, because the offer names
+  // the layout the peer has to reach and this device does not know its own yet.
+  bool offerSettings(const PageFlipRenderSettings& settings);
+
+  // The preflight verdict for the offer this device is holding. `resultHash` is the compatHash this
+  // device would have after applying -- not a "yes I can", which would pass while leaving the two
+  // devices laid out differently.
+  bool answerOffer(PageFlipSyncResult result, uint32_t resultHash);
+
+  // Commits the offer this device made, once its answer proved the peer converges. Separate from
+  // the answer arriving so the caller can put the decision in front of the user first.
+  bool commitOffer();
+
+  // Drops both sides of the exchange: a refused answer, a peer that went quiet, or a book change.
+  // Nothing has been written at this point, which is the whole reason the protocol has three steps.
+  void cancelSync();
+
+  bool hasOutstandingOffer() const { return offerOutstanding; }
 
   uint32_t getTurnSeq() const { return turnSeq; }
 
@@ -105,4 +142,16 @@ class PageFlipSession {
   // apart: same direction is the harmless simultaneous press, opposite is the conflict.
   bool lastLocalForward = true;
   bool hasLocalTurn = false;
+
+  // Force-sync, as the source: an offer is out and an answer is expected for this exact layout.
+  // Answers naming any other layout are stale -- the settings moved on after the offer went out.
+  bool offerOutstanding = false;
+  uint32_t offeredHash = 0;
+
+  // Force-sync, as the device being pushed to: an offer preflighted and waiting on its commit. Held
+  // here rather than by the caller so an apply arriving later cannot be honoured against settings
+  // nobody checked.
+  bool offerPending = false;
+  uint32_t pendingOfferHash = 0;
+  PageFlipRenderSettings pendingOffer;
 };

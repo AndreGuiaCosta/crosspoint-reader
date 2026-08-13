@@ -3,6 +3,12 @@
 #include <cstring>
 
 void PageFlipSession::setBook(uint32_t newBookId, uint32_t newCompatHash) {
+  // A force-sync in flight is an agreement about one specific layout on both ends. If this device's
+  // own layout moves under it -- the user rotated, or changed a setting mid-exchange -- the offer
+  // and the answer are both about something that no longer exists, and every later packet would be
+  // discarded as stale anyway. Dropping it here is what keeps that from reading as a peer that
+  // simply never replied.
+  if (newBookId != bookId || newCompatHash != compatHash) cancelSync();
   bookId = newBookId;
   compatHash = newCompatHash;
   // turnSeq deliberately survives a book change. It is a session counter shared by the pair, not a
@@ -63,6 +69,73 @@ bool PageFlipSession::announceHello(int32_t spineIndex, int32_t pageNumber, bool
   return transport.broadcast(wire, wireLength);
 }
 
+bool PageFlipSession::offerSettings(const PageFlipRenderSettings& settings) {
+  // An offer names the layout the peer has to reach, so a device that has not rendered has nothing
+  // to offer: the sentinel is not a layout, and a peer converging on it would mean nothing.
+  if (compatHash == 0) return false;
+
+  PageFlipSyncOffer offer;
+  offer.compatHash = compatHash;
+  offer.bookId = bookId;
+  offer.settings = settings;
+  offer.role = role;
+
+  uint8_t wire[PageFlipTransport::MAX_PAYLOAD_BYTES];
+  size_t wireLength = 0;
+  if (!PageFlipPacket::encodeSyncOffer(offer, wire, sizeof(wire), wireLength)) return false;
+  if (!transport.broadcast(wire, wireLength)) return false;
+
+  offerOutstanding = true;
+  offeredHash = compatHash;
+  return true;
+}
+
+bool PageFlipSession::answerOffer(PageFlipSyncResult result, uint32_t resultHash) {
+  if (!offerPending) return false;
+
+  PageFlipSyncAnswer answer;
+  answer.targetHash = pendingOfferHash;
+  answer.bookId = bookId;
+  answer.resultHash = resultHash;
+  answer.result = result;
+  answer.role = role;
+
+  uint8_t wire[PageFlipTransport::MAX_PAYLOAD_BYTES];
+  size_t wireLength = 0;
+  if (!PageFlipPacket::encodeSyncAnswer(answer, wire, sizeof(wire), wireLength)) return false;
+  // A refusal ends the exchange here: no apply can follow one, so holding the offer would only leave
+  // a stale commit to honour later.
+  if (result != PageFlipSyncResult::Ok) {
+    offerPending = false;
+    pendingOfferHash = 0;
+  }
+  return transport.broadcast(wire, wireLength);
+}
+
+bool PageFlipSession::commitOffer() {
+  if (!offerOutstanding) return false;
+
+  PageFlipSyncApply apply;
+  apply.targetHash = offeredHash;
+  apply.bookId = bookId;
+  apply.role = role;
+
+  uint8_t wire[PageFlipTransport::MAX_PAYLOAD_BYTES];
+  size_t wireLength = 0;
+  if (!PageFlipPacket::encodeSyncApply(apply, wire, sizeof(wire), wireLength)) return false;
+
+  offerOutstanding = false;
+  offeredHash = 0;
+  return transport.broadcast(wire, wireLength);
+}
+
+void PageFlipSession::cancelSync() {
+  offerOutstanding = false;
+  offeredHash = 0;
+  offerPending = false;
+  pendingOfferHash = 0;
+}
+
 bool PageFlipSession::poll(PageFlipDecision& decision) {
   uint8_t buffer[PageFlipTransport::MAX_PAYLOAD_BYTES];
   size_t length = 0;
@@ -102,6 +175,75 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
     decision.layoutDecided = canCompareLayout(hello.compatHash);
     decision.action = (!decision.layoutDecided || hello.compatHash == compatHash) ? PageFlipAction::PeerHello
                                                                                  : PageFlipAction::Mismatch;
+    return true;
+  }
+
+  // Settings force-sync (section 5.1). None of the three runs the layout comparison the turn and
+  // hello paths do: these packets exist precisely because the layouts differ, and reporting that
+  // difference again here would tell the user the pair is broken in the middle of repairing it.
+  if (message == PageFlipMessage::SyncOffer) {
+    PageFlipSyncOffer offer;
+    if (!PageFlipPacket::decodeSyncOffer(buffer, length, offer)) return false;
+    if (offer.bookId != bookId) return true;
+    // An offer carrying the sentinel names no layout to converge on -- a device that has not
+    // rendered cannot be a source. Its own offerSettings() refuses too; this is the wire-side half.
+    if (offer.compatHash == 0) return true;
+
+    // Both users confirming in the same window: the same lower-MAC tiebreak a conflicting turn
+    // takes. The winner keeps its own offer and ignores this one, the loser drops its offer and
+    // preflights this one, so the pair converges on one push rather than overwriting each other.
+    if (offerOutstanding && winsTiebreakAgainst(senderMac)) return true;
+    offerOutstanding = false;
+    offeredHash = 0;
+
+    pendingOffer = offer.settings;
+    pendingOfferHash = offer.compatHash;
+    offerPending = true;
+
+    decision.action = PageFlipAction::SettingsOffer;
+    decision.settings = &pendingOffer;
+    decision.peerRole = offer.role;
+    decision.applyRoleOffset = offer.role != role;
+    return true;
+  }
+
+  if (message == PageFlipMessage::SyncAnswer) {
+    PageFlipSyncAnswer answer;
+    if (!PageFlipPacket::decodeSyncAnswer(buffer, length, answer)) return false;
+    if (answer.bookId != bookId) return true;
+    // Stale: either nothing is outstanding, or this device's settings moved on after the offer went
+    // out, so the answer judges a layout it no longer has.
+    if (!offerOutstanding || answer.targetHash != offeredHash) return true;
+
+    // The verdict is only worth as much as the hash behind it. A peer that answers Ok while landing
+    // on a different layout has checked the things it knows to check and still diverged -- which is
+    // the failure this comparison exists to catch, so it outranks the peer's own opinion.
+    const bool converges = answer.result == PageFlipSyncResult::Ok && answer.resultHash == compatHash;
+    decision.action = PageFlipAction::SettingsAnswer;
+    decision.peerRole = answer.role;
+    decision.syncResult = converges                                 ? PageFlipSyncResult::Ok
+                          : answer.result == PageFlipSyncResult::Ok ? PageFlipSyncResult::Unknown
+                                                                    : answer.result;
+    // Nothing left to commit on a refusal, and nothing has been written on either device.
+    if (!converges) cancelSync();
+    return true;
+  }
+
+  if (message == PageFlipMessage::SyncApply) {
+    PageFlipSyncApply apply;
+    if (!PageFlipPacket::decodeSyncApply(buffer, length, apply)) return false;
+    if (apply.bookId != bookId) return true;
+    // Only the offer this device actually preflighted may be committed. Honouring any other commit
+    // would write settings nobody checked, which is the whole failure the three steps prevent.
+    if (!offerPending || apply.targetHash != pendingOfferHash) return true;
+
+    offerPending = false;
+    pendingOfferHash = 0;
+    decision.action = PageFlipAction::SettingsApply;
+    // The buffer outlives the flag: the caller is being handed settings it preflighted itself.
+    decision.settings = &pendingOffer;
+    decision.peerRole = apply.role;
+    decision.applyRoleOffset = apply.role != role;
     return true;
   }
 
