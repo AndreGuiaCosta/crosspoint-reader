@@ -110,6 +110,27 @@ class EpubReaderActivity final : public Activity {
   // A device being read from but not pressed sees no input of its own, so peer traffic has to keep
   // it awake. Only decoded packets from a compatible peer count -- see the receive path.
   static constexpr unsigned long PEER_ACTIVITY_WINDOW_MS = 3000;
+  // How often a device says "still here" when nothing else is being sent. Presence is what licenses
+  // the two-step advance, and until this existed the only evidence of a peer was a page turn -- so a
+  // pair being read on one device had no traffic at all between presses, and the window above could
+  // never be satisfied. Section 7's duty cycling will want to revisit the rate; the constraint it
+  // must respect is that it stays comfortably inside PEER_ACTIVITY_WINDOW_MS.
+  static constexpr unsigned long PEER_HEARTBEAT_MS = 2000;
+  // Four missed heartbeats. A peer that powered off or walked out of range says nothing on its way
+  // out, and nothing else in the protocol would ever notice: this device would go on turning two
+  // pages per press with no second half to show the other one -- the whole feature failing in the
+  // most visible way there is.
+  static constexpr unsigned long PEER_PRESENCE_TIMEOUT_MS = PEER_HEARTBEAT_MS * 4;
+  unsigned long pageflipLastHeartbeatMs = 0;
+  // Whether the user was told the peer had gone, so the pair coming back is worth a notice. Without
+  // it, "paired device is back" would fire on every ordinary book open.
+  bool pageflipPeerWasLost = false;
+  // The last anchor looked up, so a heartbeat for a page the reader has not left costs nothing.
+  // Resolving an offset reads the section file once the chapter has finalized, and at the heartbeat
+  // rate that would be constant SD traffic for an answer that cannot have changed.
+  int pageflipCachedOffsetSpine = -1;
+  int pageflipCachedOffsetPage = -1;
+  uint32_t pageflipCachedOffset = 0;
 
   // The settings force-sync (docs/pageflip.md section 5.1). Detecting a mismatch without a way to
   // fix it reads as "the feature is broken", so a confirmed mismatch offers the repair.

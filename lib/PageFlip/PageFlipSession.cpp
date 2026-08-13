@@ -123,14 +123,11 @@ bool PageFlipSession::proposeResume(const int32_t spineIndex, const uint32_t vis
   return true;
 }
 
-bool PageFlipSession::declineJoin(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset) {
-  // The peer greeted with a layout this device cannot pair with. It still gets an answer, because
-  // the answer carries this device's hash and that is how the other user finds out too -- one
-  // device reporting the problem while the other sits silent is the worse outcome.
-  //
-  // What it must not be is a greeting. Two mismatched devices each answering with "and hello to
-  // you" would trade greetings for as long as they sat next to each other; this asks for nothing
-  // back and starts no round.
+bool PageFlipSession::announcePresence(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset) {
+  // A statement, not a question: no reply asked for, no round started. Both callers need exactly
+  // that. Answering an incompatible peer with "and hello to you" would have two mismatched devices
+  // trading greetings for as long as they sat next to each other, and a heartbeat that restarted
+  // the join would re-classify the pair every couple of seconds.
   return sendHello(spineIndex, pageNumber, visibleTextOffset, false, false, PageFlipJoinVerdict::Unknown);
 }
 

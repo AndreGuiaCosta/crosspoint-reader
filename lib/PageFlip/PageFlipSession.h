@@ -156,10 +156,16 @@ class PageFlipSession {
   // which is what makes the gesture "pick a device" rather than "answer a question".
   bool proposeResume(int32_t spineIndex, uint32_t visibleTextOffset);
 
-  // The answer to a greeting from a peer this device cannot pair with (section 5). It carries this
-  // device's own hash, which is how the other user gets told about the mismatch too, and it asks
-  // for nothing back -- two mismatched devices greeting each other would never stop.
-  bool declineJoin(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset);
+  // "I am here, this is my layout, this is where I am." Asks for nothing back and starts no join
+  // round, which is what makes it usable for the two jobs that need exactly that:
+  //
+  //  - answering a greeting from a peer this device cannot pair with (section 5). The answer
+  //    carries this device's hash, which is how the other user gets told about the mismatch too,
+  //    and two mismatched devices greeting each other would never stop.
+  //  - the periodic heartbeat that keeps presence alive (section 4). Presence licenses the two-step
+  //    advance, so it must expire when a peer goes away -- and a peer that powered off or walked
+  //    out of range says nothing on its way out.
+  bool announcePresence(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset);
 
   // Pumped once per frame. Returns true when a packet was received and `decision` was filled; the
   // decision may still be Ignore, which is not the same as "nothing arrived" -- only a decoded

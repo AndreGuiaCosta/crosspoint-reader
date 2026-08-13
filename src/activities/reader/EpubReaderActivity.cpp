@@ -1202,6 +1202,10 @@ void EpubReaderActivity::pageflipEnd() {
   pageflipSyncStateSinceMs = 0;
   pageflipSyncMessage[0] = '\0';
   pageflipResumeOwnOffset = 0;
+  pageflipPeerWasLost = false;
+  pageflipLastHeartbeatMs = 0;
+  pageflipCachedOffsetSpine = -1;
+  pageflipCachedOffsetPage = -1;
 }
 
 bool EpubReaderActivity::pageflipSettledPage(int& page) {
@@ -1220,11 +1224,20 @@ bool EpubReaderActivity::pageflipSettledPosition(int& page, uint32_t& visibleTex
   if (!section) return false;
   page = section->currentPage;
   if (page < 0 || page >= section->pageCount) return false;
-  // The content anchor, read the same way saveProgress and rememberCurrentContentOffset read it: an
-  // in-memory lookup while the section is building, and one small file read otherwise. Both are
-  // rare -- this is the join and the layout-change re-greeting, not the page-turn path.
+  // Cached per position: the heartbeat asks this every couple of seconds, and the lookup below is a
+  // file read once the chapter has finalized. The cache is dropped whenever the pagination moves
+  // (pageflipRefreshCompat), which is the only way an answer for the same page could change.
+  if (currentSpineIndex == pageflipCachedOffsetSpine && page == pageflipCachedOffsetPage) {
+    visibleTextOffset = pageflipCachedOffset;
+    return true;
+  }
+  // Read the same way saveProgress and rememberCurrentContentOffset read it: an in-memory lookup
+  // while the section is building, one small file read otherwise.
   const auto offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(page));
   if (!offset.has_value()) return false;
+  pageflipCachedOffsetSpine = currentSpineIndex;
+  pageflipCachedOffsetPage = page;
+  pageflipCachedOffset = *offset;
   visibleTextOffset = *offset;
   return true;
 }
@@ -1380,6 +1393,11 @@ void EpubReaderActivity::pageflipRefreshCompat() {
                                                   pageflipBookId, Section::FILE_VERSION);
   if (hash == pageflipCompatHash) return;
 
+  // The pagination moved, so a page number no longer names the content it did and the cached anchor
+  // is about a page that no longer exists. Dropped before anything reads it.
+  pageflipCachedOffsetSpine = -1;
+  pageflipCachedOffsetPage = -1;
+
   // Nothing is committed until the position can be read: the greeting and the stored hash have to
   // go out together, so a render in flight defers the whole thing to the next pump. The greeting
   // now carries the join's content anchor too (section 4.2), so it waits on that as well -- a
@@ -1479,13 +1497,33 @@ void EpubReaderActivity::pageflipPump() {
   uint32_t settledOffset = 0;
   if (pageflipOweJoinDecline && pageflipSettledPosition(settledPage, settledOffset)) {
     pageflipOweJoinDecline = false;
-    pageflip->declineJoin(currentSpineIndex, settledPage, settledOffset);
+    pageflip->announcePresence(currentSpineIndex, settledPage, settledOffset);
   }
 
   // The join's answer, for the same reason and with the same retry: it carries a position, and it
   // must not be computed while a render is in flight. Answering also sends this device's reply, so
   // a probe left unanswered would leave the peer waiting -- which is why it stays latched.
   if (pageflipJoinProbePending) pageflipAnswerJoinProbe();
+
+  // "Still here." Sent whether or not a peer has ever answered, because a device that boots second
+  // has to find one, and sent whether or not the layouts agree, because a mismatched peer still
+  // wants this device's hash. It asks for nothing back, so two devices doing this do not talk each
+  // other into an ever-growing exchange.
+  if (millis() - pageflipLastHeartbeatMs >= PEER_HEARTBEAT_MS && pageflipSettledPosition(settledPage, settledOffset)) {
+    pageflipLastHeartbeatMs = millis();
+    pageflip->announcePresence(currentSpineIndex, settledPage, settledOffset);
+  }
+
+  // And presence expires. Nothing else expires it: a peer that powered off or walked out of range
+  // sends no farewell, and leaving the flag set means every press here turns two pages with nobody
+  // on the other end showing the second one -- solo reading that silently skips every other page.
+  if (pageflipPeerPresent && lastPeerContactMs != 0 && millis() - lastPeerContactMs >= PEER_PRESENCE_TIMEOUT_MS) {
+    pageflipPeerPresent = false;
+    pageflipPeerWasLost = true;
+    LOG_INF("ERS", "PageFlip peer went quiet; back to one page per press");
+    snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_PEER_OFFLINE));
+    pageflipSetSyncState(PageFlipSyncState::Reporting);
+  }
 
   PageFlipDecision decision;
   if (!pageflip->poll(decision)) return;
@@ -1533,6 +1571,13 @@ void EpubReaderActivity::pageflipPump() {
   if (!pageflipPeerPresent) {
     pageflipPeerPresent = true;
     LOG_INF("ERS", "PageFlip peer present; turns now advance the pair by two");
+    // Only worth a notice if the user was told it had gone. Announcing a peer that was never
+    // missing would pop a message on every ordinary book open.
+    if (pageflipPeerWasLost) {
+      pageflipPeerWasLost = false;
+      snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_PEER_BACK));
+      pageflipSetSyncState(PageFlipSyncState::Reporting);
+    }
   }
   // Re-arm the notice: the layouts agree again, so a later divergence is worth reporting afresh.
   // Cancelling an unexpired window here is what makes the rotation case quiet -- the pair
