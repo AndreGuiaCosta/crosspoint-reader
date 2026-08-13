@@ -623,30 +623,42 @@ be clobbered.
 | `screenMargin` | `viewportWidth/Height` |
 | `hyphenationEnabled`, `embeddedStyle`, `imageRendering`, `focusReadingEnabled` | direct |
 
-### `orientation` is deliberately **not** in that table
+### That table is not the whole of what moves the viewport — and the rest is deliberately left out
 
-Pushing orientation would create a feedback loop, not a fix. `HalTiltSensor::update()` is called
-every iteration with `SETTINGS.orientation` ([main.cpp:466](../src/main.cpp)) and drives
-orientation live, per device. So: push A's orientation to B → B's tilt sensor reads B's actual
-physical orientation next loop and reverts it → B's `compatHash` changes → §4.4 re-triggers
-negotiation → repeat.
+`screenMargin` is only one of three inputs. The reader's viewport
+([`ReaderUtils::readerLayoutBox()`](../src/activities/reader/ReaderUtils.h)) is the screen minus the
+physical bezel, the user's margin, **the status bar** — `UITheme::getStatusBarHeight()` is computed
+from `SETTINGS.statusBarSpec()`, so the clock, the battery percentage, the title and the progress
+bar's thickness all move it — and **the automatic page-turn reservation**, which is runtime state
+rather than a setting at all.
 
-The honest resolution is physical, because the cause is physical:
+None of those are pushed. The pair shares a *layout*, not a device configuration, and a force-sync
+that silently rewrote the other user's status bar would be doing something they did not ask for. So
+a pair that differs there cannot be repaired by this action, and the honest outcome is an abort that
+says which screens to go and match. That is a real, reachable case, and
+`run_sim_pair_forcesync_abort.sh` is built on it.
 
-- **Tilt auto-rotation on (default):** orientation is *sensor-owned*. Two devices in a shared case
-  rotate together and converge with no syncing at all. If they genuinely disagree, one device is
-  physically oriented differently, and the prompt says so — "rotate the devices to match" — rather
-  than pushing a value that will be reverted within a frame.
-- **Tilt auto-rotation off on both:** nothing is fighting the setting, so orientation becomes
-  pushable and joins the table.
+### `orientation` is deliberately not in the table either
 
-Pair mode therefore also requires both devices to agree on the *tilt setting itself*; a pair with
-tilt on for one device and off for the other has no stable orientation, and that mismatch is worth
-reporting directly.
+**Correction to an earlier draft.** It argued that pushing orientation would create a feedback loop,
+because `HalTiltSensor` "drives orientation live, per device". That is wrong, and the citation
+proves the opposite of what it was used for: `halTiltSensor.update(SETTINGS.tiltPageTurn,
+SETTINGS.orientation, ...)` ([main.cpp:466](../src/main.cpp)) *reads* the orientation in order to
+interpret a tilt **page-turn gesture** relative to the screen. There is no auto-rotation in this
+firmware — nothing writes `SETTINGS.orientation` except an explicit user action — so there is no
+loop to fear, and the follow-on requirement that a pair "agree on the tilt setting itself" does not
+exist: `tiltPageTurn` has no effect on layout whatsoever.
+
+Orientation still stays out, for the reason that survives: it describes how a device is being held,
+which is physical and per-device. Two devices in a shared case are already oriented alike; two that
+are not want rotating, not overwriting. It reaches the user through the same viewport abort above.
 
 **Direction: same interaction as §4.3** — prompt on both, and confirming on one pushes *that*
 device's render settings to the other. One consistent gesture for "this device is the source of
 truth", used for both progress and settings.
+
+The confirmed mismatch of §5 **is** that prompt, rather than a notice followed by a separate one:
+reporting a problem and then offering nothing is the dead end this section opens by rejecting.
 
 ### Fonts are out of band: missing font is a hard error
 
@@ -679,21 +691,43 @@ So an apply-then-discover sequence would leave the receiving device with its lay
 invalidated *and* its font setting quietly reverted to a built-in — rendering in the wrong font,
 with a hash that still mismatches. Exactly the silent desync §5 exists to prevent.
 
-**Two-phase force-sync:**
+**Three-message force-sync** — offer, answer, apply:
 
 ```
-1. PREFLIGHT   source sends the target render spec + font identity
-               peer answers: registry.findFamily(name) != nullptr ?
-2. ABORT       any missing font -> nothing is written on either device
-               error names the font and the device that lacks it
-3. APPLY       only when the peer confirms it can resolve every font
+1. OFFER    source broadcasts its render settings + the compatHash they produce
+2. ANSWER   peer preflights and replies with the compatHash it WOULD have after applying
+            source compares that against its own; anything but equal aborts, writing nothing
+3. APPLY    only on a converging answer -- the commit is what turns a preflight into a change
 ```
 
-`SdCardFontRegistry::findFamily()` is the availability check — it is already what
-`SdCardFontSystem::begin()` uses, so the preflight asks the same question the loader will.
+### The answer is a hash, not a yes
 
-The error must be actionable, naming both the font and which device is missing it: *"Right device
-has no font 'Bookerly'. Install it on that device, or select a built-in font on both."*
+**Correction to an earlier draft**, which had the peer answer `registry.findFamily(name) != nullptr`.
+That check is necessary and *not sufficient*, in two ways that both end with a force-sync reporting
+success while the pair stays broken — having invalidated a layout cache and rebuilt a whole chapter
+to get there:
+
+- **Same family name, different file.** `fontId` is computed from the font file's own
+  `contentHash()` ([SdCardFontManager.cpp:44](../src/SdCardFontManager.cpp)), so two cards carrying
+  different builds of "Bookerly" both answer yes and still hash differently.
+- **The viewport is not about fonts at all.** Orientation, the status bar and the auto-page-turn
+  reservation all move it, and none of them are pushed (above), so a peer can apply every offered
+  field faithfully and still lay the page out differently.
+
+Answering with the would-be hash folds in every input by construction — the same property §5 relies
+on for the hash itself. It is computed by running `computePageFlipCompatHash()` over the
+`ReaderRenderSpec` the peer *would* build, which is why the derivations behind that spec take their
+inputs explicitly rather than reading the live settings.
+
+`findFamily()` keeps its place as the first check, because it is the one whose failure the rest of
+the machinery would otherwise hide (the silent clear above). The reason codes it and the component
+comparisons produce — `MissingFont`, `FontDiffers`, `ScreenDiffers` — do not decide anything; the
+hash comparison does. They exist so the abort can name the thing to fix and the device to fix it on:
+*"Install font Bookerly on the right device"*, *"Match the rotation and status bar first"*.
+
+A peer that answers `Ok` while landing on a different hash is therefore still refused. That is not a
+hypothetical: two devices on different firmware builds lay identical settings out differently, and
+`Section::FILE_VERSION` is in the hash precisely to catch it.
 
 ### Applying a synced setting is expensive — surface it
 
@@ -708,7 +742,22 @@ and rebuilds "skip zip inflation entirely". The re-layout is therefore substanti
 cold first open — worth telling the user so the wait is not mistaken for a hang.
 
 Settings writes must keep the existing value-change guard (`if (newVal == _current) return;`) so a
-force-sync that changes nothing does not burn a SPIFFS erase cycle.
+force-sync that changes nothing does not burn a SPIFFS erase cycle. A push that changes nothing also
+skips the rebuild entirely — if the pair already agreed on every pushed field, the difference is in
+something this action does not carry, and re-laying out the book would not fix it.
+
+### The applied page number is worthless — re-anchor on the offset
+
+§4.2's rule applies to the receiving device's *own* saved position, not just to the join: the apply
+invalidates the layout its page number counted. Applying therefore takes the same route the
+text-settings screen already takes — remember the content offset, drop the section under
+`RenderLock`, and let `getPageForVisibleTextOffset()` re-derive the page under the new layout.
+Skipping that lands the user on an arbitrary page immediately after the action meant to fix the
+desync.
+
+Loading the new font belongs inside that same lock: `SdCardFontSystem::ensureLoaded()` frees the
+resident `SdCardFont` that the render task may be walking. The `saveToFile()` goes outside it, so an
+SD write never stalls a render.
 
 ---
 
@@ -840,9 +889,17 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
    a different `screenMargin` and asserts both halves report it, neither counts the other as
    present, and the right half's page never moves under the left half's presses. Plus
    `run_sim_pair_coldstart.sh` for the skew case the symmetric harnesses cannot see.
-4. **Settings force-sync** — §5.1. The prompt-on-both / confirm-on-one gesture, the
-   `ReaderRenderSpec`-feeding subset, the two-phase preflight/abort with `findFamily()`, and the
-   rebuild progress UI.
+4. ✅ **Settings force-sync** — §5.1. The prompt-on-both / confirm-on-one gesture, the
+   `ReaderRenderSpec`-feeding subset, the preflight/abort, and the re-anchored rebuild. The
+   preflight answers with a hash rather than a boolean, for the reasons recorded in §5.1. Covered by
+   `test/pageflip_packet` and `test/pageflip_session` on the wire and the exchange, and by two pair
+   harnesses: `run_sim_pair_forcesync.sh`, where the offer converges and the halves render alike
+   again, and `run_sim_pair_forcesync_abort.sh`, where the divergence is a status-bar setting the
+   push does not carry and the peer's `settings.json` must come out byte-identical.
+
+   The rebuild wait deliberately reuses the existing indexing popup rather than growing a progress
+   UI of its own: a settings-driven re-layout already looks like this everywhere else in the reader,
+   and a second treatment for the same wait would be a new thing to explain.
 5. **Lifecycle** — §4.1–4.4: own-page persistence, join negotiation with the aligned / swapped /
    divergent classification, resume prompt, rotation re-negotiation, peer-offline indicator.
 6. **Coexistence** — §6 suspend/resume around WiFi.
