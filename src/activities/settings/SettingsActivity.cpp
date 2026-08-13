@@ -17,6 +17,7 @@
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
+#include "PageFlipPairingActivity.h"
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
@@ -85,6 +86,13 @@ void SettingsActivity::rebuildSettingsLists() {
   readerSettings.insert(readerSettings.begin() + 1,
                         SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
+#ifdef FREEINK_CAP_PAGEFLIP
+  // Next to the two settings it completes, and only once the feature is switched on: choosing a
+  // partner for a link that never comes up does nothing the user could observe.
+  if (SETTINGS.pageflipEnabled) {
+    readerSettings.push_back(SettingInfo::Action(StrId::STR_PAGEFLIP_PAIR, SettingAction::PageFlipPairing));
+  }
+#endif
 
   // Update currentSettings pointer and count for the active category
   switch (selectedCategoryIndex) {
@@ -406,6 +414,14 @@ void SettingsActivity::toggleCurrentSetting() {
                                  rebuildSettingsLists();
                                });
         break;
+#ifdef FREEINK_CAP_PAGEFLIP
+      case SettingAction::PageFlipPairing:
+        // Saves the MAC itself, so the handler only refreshes the list -- the entry disappears if
+        // paired reading was switched off while the screen was up.
+        startActivityForResult(std::make_unique<PageFlipPairingActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) { rebuildSettingsLists(); });
+        break;
+#endif
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
         break;

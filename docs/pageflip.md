@@ -1182,12 +1182,22 @@ of "is that mine?" on a hex string.
    book open would draw it on the first render and immediately have to spend a second full refresh
    un-drawing it.
 
-   **Not done: the pairing activity and `pageflipPeerMac`.** The integration table below lists the
-   peer MAC as a setting, but nothing filters on it — the receive path filters on `bookId` and
-   `compatHash`, and the MAC is used only for the lower-MAC tiebreak. Storing one buys nothing until
-   MAC filtering is added to every receive path, which is a protocol change wearing a UI hat rather
-   than polish, and it only starts to matter with more than one pair in a room. Until then any X4 in
-   range reading the same book joins your spread.
+   ✅ **The pairing screen and `pageflipPeerMac`** landed after all, in two parts, because the
+   filtering is where the value is and it is verifiable on its own: first `setPeerMac()` and the
+   beacon message (§8.1), then the screen that chooses one. The screen appears under Reader only
+   when paired reading is switched on — choosing a partner for a link that never comes up does
+   nothing a user could observe — and it shows this device's own MAC in the header, because the
+   other screen is a column of hex and that is what tells you which line of it is you.
+
+   Two things it has to do that are not the list. It releases the transport in `onExit()`, or the
+   next book opened would find the reader's own §6 guard tripped by the pairing screen's radio. And
+   it holds a notice before closing: pairing is per device, so choosing here leaves the *other* half
+   still open to anyone, the pair works either way, and nothing would ever say so again.
+
+   `run_sim_pair_pairing.sh` drives two instances through the real settings UI to the real screen —
+   the route was established with a throwaway probe script rather than guessed — and asserts that
+   each finds the other, that Confirm writes the peer's MAC into `settings.json`, and that the half
+   which chose nothing comes out paired with nobody.
 
 Steps 2, 4 and 5 are the bulk of the work and are where the fiddly bugs live. Note step 4 lands
 before step 5 deliberately: the join negotiation in §4.2 assumes both devices already agree on
