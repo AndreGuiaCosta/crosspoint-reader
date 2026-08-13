@@ -994,7 +994,7 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
 | Auto-sleep coupling | `lastActivityTime`, main.cpp:494-499 |
 | Compat hash source | `CrossPointSettings::readerRenderSpec()`, [CrossPointSettings.cpp:251-265](../src/CrossPointSettings.cpp) |
 | Settings force-sync | the `ReaderRenderSpec`-feeding subset only (§5.1), via `JsonSettingsIO` |
-| Settings | `pageflipEnabled`, `pageflipRole`, `pageflipPeerMac[6]` in `CrossPointSettings` + `JsonSettingsIO` |
+| Settings | ✅ `pageflipEnabled`, `pageflipRole` in `CrossPointSettings` + `SettingsList.h`. `pageflipPeerMac[6]` is **not** a settings entry — it is a receive-path filter that does not exist yet, and storing it without one buys nothing (§9 step 8) |
 | Build gate | `-DFREEINK_CAP_PAGEFLIP=1`, with stubs so it compiles out cleanly. Note master has only `FREEINK_DEVICE_*` (platformio.ini:155-202) — the `FREEINK_CAP_*` capability convention comes from `feat-bluetooth`, so we would be adopting it, not following it |
 
 ---
@@ -1053,7 +1053,37 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
    gone must turn exactly one page).
 6. **Coexistence** — §6 suspend/resume around WiFi.
 7. **Power tuning** — wake window sweep against measured battery.
-8. **UX polish** — pairing activity, settings entries, status indicator.
+8. **Settings and indicator** — ✅ for the settings and the badge; the pairing activity is
+   deliberately still open, see below.
+
+   `pageflipEnabled` (off by default) and `pageflipRole` are ordinary declarative entries in
+   `SettingsList.h`. The enable gate matters more than it looks: before it, the reader brought the
+   radio up for every session on every device, and almost nobody has a second X4. Role matters more
+   still — it was hardcoded to Left on device, so **both halves believed they were the left one and
+   the spread could never form on real hardware at all.** Nothing can discover it; only the user
+   knows which device they put on the left.
+
+   Both are reconciled every pump rather than read once at `onEnter()`, because the web UI writes
+   settings straight into a live reader and there is no changed-hook to hang off — the same reason
+   the compat hash is recomputed every pump. A role change re-runs the join, since which half of the
+   spread this device shows is exactly what the join concluded.
+
+   The indicator is a status-bar badge: two little pages, this device's solid and the absent one an
+   empty frame, mirrored by role so one glyph says both "your partner is gone" and "you are the left
+   half". It appears **only when a pair is configured but not connected** — a working pair needs no
+   badge, since the other device is right there showing the next page. Two things it must respect:
+   it draws inside the existing bar and adds no height (the bar's height feeds the viewport, the
+   viewport feeds the compat hash, so a badge that grew the bar would re-paginate the book at the
+   moment the pair connected), and it waits out a grace period before appearing, or every paired
+   book open would draw it on the first render and immediately have to spend a second full refresh
+   un-drawing it.
+
+   **Not done: the pairing activity and `pageflipPeerMac`.** The integration table below lists the
+   peer MAC as a setting, but nothing filters on it — the receive path filters on `bookId` and
+   `compatHash`, and the MAC is used only for the lower-MAC tiebreak. Storing one buys nothing until
+   MAC filtering is added to every receive path, which is a protocol change wearing a UI hat rather
+   than polish, and it only starts to matter with more than one pair in a room. Until then any X4 in
+   range reading the same book joins your spread.
 
 Steps 2, 4 and 5 are the bulk of the work and are where the fiddly bugs live. Note step 4 lands
 before step 5 deliberately: the join negotiation in §4.2 assumes both devices already agree on

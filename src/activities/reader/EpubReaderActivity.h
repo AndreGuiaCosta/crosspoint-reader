@@ -122,6 +122,16 @@ class EpubReaderActivity final : public Activity {
   // most visible way there is.
   static constexpr unsigned long PEER_PRESENCE_TIMEOUT_MS = PEER_HEARTBEAT_MS * 4;
   unsigned long pageflipLastHeartbeatMs = 0;
+  // When the link came up, so the status badge can hold its tongue while a peer is still answering.
+  // Without the grace period the badge draws on the very first render -- a greeting takes a moment
+  // to come back -- and then has to be un-drawn, costing a second full refresh at every book open.
+  // The window is the same one presence expires on: the badge appears exactly when this device
+  // would have given a peer up for gone.
+  unsigned long pageflipLinkUpMs = 0;
+  // What the badge showed at the last render. The reader has no reason of its own to redraw when a
+  // peer appears or vanishes, so without this the badge would be stale until the next page turn --
+  // reporting a peer as offline for as long as the reader sat still.
+  bool pageflipBadgeVisible = false;
   // Whether the user was told the peer had gone, so the pair coming back is worth a notice. Without
   // it, "paired device is back" would fire on every ordinary book open.
   bool pageflipPeerWasLost = false;
@@ -310,9 +320,17 @@ class EpubReaderActivity final : public Activity {
   void pageTurn(bool isForwardTurn);
 #ifdef FREEINK_CAP_PAGEFLIP
   // Brings the pair link up for this book, or leaves the reader solo if it cannot start. Reading
-  // never blocks on the peer.
+  // never blocks on the peer. Does nothing at all when paired reading is switched off.
   void pageflipBegin();
   void pageflipEnd();
+  // Which half of the spread this device is, from settings. Nothing can discover it -- only the
+  // user knows which device they put on the left.
+  static PageFlipRole pageflipConfiguredRole();
+  // Whether the status bar should carry the "configured but alone" badge right now.
+  bool pageflipBadgeDue() const;
+  // Brings the link up or down and adopts a role change, per pump. Neither setting has a
+  // changed-hook to hang off: the web UI writes them straight into SETTINGS under a live reader.
+  void pageflipReconcileSettings();
   // Pumped once per frame: drains owed steps, announces a settled local turn, applies one peer
   // packet.
   void pageflipPump();

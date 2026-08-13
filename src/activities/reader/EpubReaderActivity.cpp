@@ -1153,15 +1153,30 @@ void EpubReaderActivity::pageflipHealTo(const PageFlipDecision& decision) {
   requestUpdate();
 }
 
+PageFlipRole EpubReaderActivity::pageflipConfiguredRole() {
+  return SETTINGS.pageflipRole == CrossPointSettings::PAGEFLIP_ROLE_RIGHT ? PageFlipRole::Right : PageFlipRole::Left;
+}
+
+bool EpubReaderActivity::pageflipBadgeDue() const {
+  if (!pageflip || pageflipPeerPresent) return false;
+  // Not while a peer might still be answering. A greeting takes a moment to come back, so the first
+  // render of every paired book open would otherwise carry the badge and immediately have to lose
+  // it -- a second full e-ink refresh, on every open, to un-say something that was never true.
+  return millis() - pageflipLinkUpMs >= PEER_PRESENCE_TIMEOUT_MS;
+}
+
 void EpubReaderActivity::pageflipBegin() {
   if (!epub) return;
+  // Off by default, and the gate is the point: bringing the link up costs a radio that transmits on
+  // a timer, and almost nobody has a second X4 to pair it with.
+  if (!SETTINGS.pageflipEnabled) return;
 
   pageflipTransport = makePageFlipTransport();
   if (!pageflipTransport) {
     LOG_ERR("ERS", "OOM: PageFlip transport");
     return;
   }
-  auto session = makeUniqueNoThrow<PageFlipSession>(*pageflipTransport, defaultPageFlipRole());
+  auto session = makeUniqueNoThrow<PageFlipSession>(*pageflipTransport, pageflipConfiguredRole());
   if (!session) {
     LOG_ERR("ERS", "OOM: PageFlip session");
     pageflipTransport.reset();
@@ -1181,9 +1196,10 @@ void EpubReaderActivity::pageflipBegin() {
   // device has not decided on, and would read as a mismatch to any peer that had already rendered.
   // pageflipRefreshCompat() sends the first one.
   session->setBook(pageflipBookId, 0);
+  pageflipLinkUpMs = millis();
   pageflip = std::move(session);
   LOG_INF("ERS", "PageFlip link up as %s, waiting for a peer",
-          defaultPageFlipRole() == PageFlipRole::Left ? "left" : "right");
+          pageflipConfiguredRole() == PageFlipRole::Left ? "left" : "right");
 }
 
 void EpubReaderActivity::pageflipEnd() {
@@ -1204,6 +1220,8 @@ void EpubReaderActivity::pageflipEnd() {
   pageflipResumeOwnOffset = 0;
   pageflipPeerWasLost = false;
   pageflipLastHeartbeatMs = 0;
+  pageflipLinkUpMs = 0;
+  pageflipBadgeVisible = false;
   pageflipCachedOffsetSpine = -1;
   pageflipCachedOffsetPage = -1;
 }
@@ -1461,8 +1479,55 @@ void EpubReaderActivity::pageflipReportMismatch(const PageFlipDecision& decision
   pageflipMismatchSinceMs = millis();
 }
 
-void EpubReaderActivity::pageflipPump() {
+void EpubReaderActivity::pageflipReconcileSettings() {
+  // Neither of these has a settings-changed hook to hang off -- the web UI writes them straight
+  // into SETTINGS under a live reader -- so they are reconciled every pump, exactly as the compat
+  // hash is and for the same reason.
+  const bool wanted = SETTINGS.pageflipEnabled != 0;
+  if (wanted && !pageflip) {
+    pageflipBegin();
+    return;
+  }
+  if (!wanted && pageflip) {
+    LOG_INF("ERS", "PageFlip turned off; releasing the link");
+    pageflipEnd();
+    return;
+  }
   if (!pageflip) return;
+
+  // Role decides which half of the spread this device shows, so a change to it invalidates the
+  // classification that produced the current one. Setting it up is the moment a user is most likely
+  // to change it, and leaving the session on the old role means both halves believe they are Left:
+  // no role offset anywhere, and Identical resolving with neither device stepping.
+  const PageFlipRole role = pageflipConfiguredRole();
+  if (pageflip->getRole() != role) {
+    LOG_INF("ERS", "PageFlip role is now %s; re-negotiating", role == PageFlipRole::Left ? "left" : "right");
+    pageflip->setRole(role);
+    // Force the greeting that re-runs the join: the hash has not moved, so refreshCompat would not
+    // send one on its own.
+    pageflipCompatHash = 0;
+  }
+}
+
+void EpubReaderActivity::pageflipPump() {
+  pageflipReconcileSettings();
+  if (!pageflip) {
+    // The badge cannot outlive the link: turning paired reading off mid-session has to take it off
+    // the screen too.
+    if (pageflipBadgeVisible) {
+      pageflipBadgeVisible = false;
+      requestUpdate();
+    }
+    return;
+  }
+
+  // A peer appearing or vanishing changes the status bar, and nothing else in the reader would ever
+  // redraw for it -- a page sits until the reader turns it. Without this the badge reports a state
+  // that stopped being true minutes ago.
+  if (pageflipBadgeDue() != pageflipBadgeVisible) {
+    pageflipBadgeVisible = !pageflipBadgeVisible;
+    requestUpdate();
+  }
 
   // Before anything is sent: the fingerprint has to describe the layout this device is actually
   // using, and this is also where the very first greeting goes out.
@@ -2630,8 +2695,18 @@ void EpubReaderActivity::renderStatusBar() const {
     title = epub->getTitle();
   }
 
+  // The badge marks a pair that is configured but not connected -- the one state the reader cannot
+  // show by itself. A working pair needs no badge: the other device is right there showing the next
+  // page. See BaseTheme::PairStatus.
+  auto pairStatus = BaseTheme::PairStatus::None;
+#ifdef FREEINK_CAP_PAGEFLIP
+  if (pageflipBadgeDue()) {
+    pairStatus = pageflipConfiguredRole() == PageFlipRole::Left ? BaseTheme::PairStatus::OfflineLeft
+                                                               : BaseTheme::PairStatus::OfflineRight;
+  }
+#endif
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
-                    section->isBuilding());
+                    section->isBuilding(), pairStatus);
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {

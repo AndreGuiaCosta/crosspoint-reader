@@ -38,6 +38,37 @@ void drawBookmarkStatusIcon(const GfxRenderer& renderer, const int x, const int 
   }
 }
 
+// The paired-reading indicator (docs/pageflip.md section 4). Two little pages side by side: this
+// device's half solid, the absent half an empty outline. Drawn from primitives rather than a bitmap
+// so it can be mirrored by role -- one glyph then says both "your partner is gone" and "you are the
+// left half", and the second is what the user needs in order to fix the first.
+//
+// Shown only when the pair is CONFIGURED but not connected. A healthy pair needs no badge: the two
+// devices are visibly showing different pages. An indicator that was always on would be permanent
+// clutter, earning its space only in the rare case.
+//
+// It draws INSIDE the existing bar and adds no height. That is a hard constraint, not a preference:
+// the status bar height feeds the reader's viewport, the viewport feeds the layout hash, and a
+// badge that grew the bar would re-paginate the book and change this device's compat hash -- at the
+// exact moment the pair connects or drops, which is when it would appear.
+constexpr int pairStatusIconWidth = 17;
+constexpr int pairStatusIconHeight = 12;
+constexpr int pairStatusIconGap = 4;
+
+void drawPairOfflineStatusIcon(const GfxRenderer& renderer, const int x, const int y, const bool selfIsLeft) {
+  constexpr int pageWidth = 7;
+  constexpr int spineGap = 3;
+  const int rightPageX = x + pageWidth + spineGap;
+
+  const int selfX = selfIsLeft ? x : rightPageX;
+  const int peerX = selfIsLeft ? rightPageX : x;
+
+  // This device: solid, because it is the half you are holding and it is certainly there.
+  renderer.fillRect(selfX, y, pageWidth, pairStatusIconHeight, true);
+  // The peer: an empty frame where a page ought to be.
+  renderer.drawRect(peerX, y, pageWidth, pairStatusIconHeight, 1, true);
+}
+
 }  // namespace
 
 void BaseTheme::drawBatteryOutline(const GfxRenderer& renderer, int x, int y, int battWidth, int rectHeight) {
@@ -781,7 +812,8 @@ void BaseTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
 
 void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
                               const int pageCount, std::string title, const int paddingBottom, const int textYOffset,
-                              const bool fillMargin, const bool isPageBookmarked, const bool pageCountEstimated) const {
+                              const bool fillMargin, const bool isPageBookmarked, const bool pageCountEstimated,
+                              const PairStatus pairStatus) const {
   auto metrics = UITheme::getInstance().getMetrics();
   int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
@@ -883,6 +915,14 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     const int bookmarkY = textY + 5;
     drawBookmarkStatusIcon(renderer, bookmarkX, bookmarkY);
     leftClusterWidth += bookmarkStatusIconWidth + bookmarkGap;
+  }
+
+  // Draw the paired-reading badge, on the same lane and by the same rules as the bookmark icon.
+  if (showStatusBarTextLane && pairStatus != PairStatus::None) {
+    const int pairGap = leftClusterWidth > 0 ? pairStatusIconGap : 0;
+    const int pairX = leftClusterX + leftClusterWidth + pairGap;
+    drawPairOfflineStatusIcon(renderer, pairX, textY + 5, pairStatus == PairStatus::OfflineLeft);
+    leftClusterWidth += pairStatusIconWidth + pairGap;
   }
 
   // Draw Title

@@ -200,7 +200,15 @@ class PageFlipSession {
   void adoptTurnSeq(uint32_t peerTurnSeq);
 
   PageFlipRole getRole() const { return role; }
-  void setRole(PageFlipRole newRole) { role = newRole; }
+  // Changing role invalidates the classification: which half of the spread this device shows is
+  // what the join concluded, so it has to be concluded again. Done here rather than left to the
+  // caller because a role change that kept the old classification is invisible -- the pair simply
+  // sits one page wrong.
+  void setRole(PageFlipRole newRole) {
+    if (newRole == role) return;
+    role = newRole;
+    beginJoinRound();
+  }
 
  private:
   // Lower MAC wins a conflict (section 3). Returns true when this device is the winner.

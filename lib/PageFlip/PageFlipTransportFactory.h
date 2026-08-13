@@ -14,8 +14,7 @@
 // above lib/PageFlip needs to know which link it got.
 std::unique_ptr<PageFlipTransport> makePageFlipTransport();
 
-// Which half of the spread this device is, until the pairing UI exists (section 9 step 8 owns the
-// setting). On the host the UDP slot decides, so two simulator instances take opposite roles with
-// no configuration; on device everything is Left for now, which is wrong for a real pair and is
-// exactly why role belongs in settings rather than here.
-PageFlipRole defaultPageFlipRole();
+// Role is deliberately NOT decided here. It is a per-device setting the user answers, because
+// nothing in the pair can discover which half you physically put on the left -- see
+// CrossPointSettings::pageflipRole. An earlier version derived it from the simulator's UDP slot,
+// which had the effect of leaving the real path untested on the only platform that can test it.

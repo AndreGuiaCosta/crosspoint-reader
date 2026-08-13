@@ -280,6 +280,19 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t language = 0;
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
+  // PageFlip: this device and a second one act as one two-page spread (docs/pageflip.md).
+  //
+  // Off by default, and that default is load-bearing rather than cautious. Almost nobody has two
+  // X4s, and the pair link is a radio that transmits on a timer -- a reader with no partner has to
+  // go on paying nothing for a feature it cannot use.
+  uint8_t pageflipEnabled = 0;
+  // Which half of the spread this device is. It cannot be negotiated: the pair has no way to know
+  // which one you physically put on the left, and guessing shows the two pages in the wrong order.
+  // Both devices set to the same half is a setup error the join negotiation surfaces rather than
+  // silently papering over -- with no role difference, nothing ever takes the one-page offset.
+  static constexpr uint8_t PAGEFLIP_ROLE_LEFT = 0;
+  static constexpr uint8_t PAGEFLIP_ROLE_RIGHT = 1;
+  uint8_t pageflipRole = PAGEFLIP_ROLE_LEFT;
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;

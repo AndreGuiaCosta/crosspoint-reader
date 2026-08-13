@@ -402,6 +402,18 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // on next WiFi connect, which is useful when crossing time zones.
         SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &CrossPointSettings::clockHasBeenSynced, "clockHasBeenSynced",
                             StrId::STR_CUSTOMISE_STATUS_BAR),
+#ifdef FREEINK_CAP_PAGEFLIP
+        // Paired reading (docs/pageflip.md). Two entries and no pairing screen: the pair finds each
+        // other over the air, so the only things a user can answer are "do I have a second device"
+        // and "which one am I holding" -- and neither is discoverable by the devices themselves.
+        SettingInfo::Toggle(StrId::STR_PAGEFLIP_ENABLED, &CrossPointSettings::pageflipEnabled, "pageflipEnabled",
+                            StrId::STR_CAT_READER),
+        SettingInfo::Enum(StrId::STR_PAGEFLIP_ROLE, &CrossPointSettings::pageflipRole,
+                          // The pageflip device names are lowercase on purpose -- they read
+                          // mid-sentence in the force-sync messages ("the right device has...").
+                          // A menu wants a label, so these are the capitalised direction strings.
+                          {StrId::STR_DIR_LEFT, StrId::STR_DIR_RIGHT}, "pageflipRole", StrId::STR_CAT_READER),
+#endif
     };
     // Only show tilt page turn setting when the QMI8658 IMU is present (X3)
     if (halTiltSensor.isAvailable()) {

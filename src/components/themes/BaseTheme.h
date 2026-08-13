@@ -213,10 +213,17 @@ class BaseTheme {
   virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
                                int selectedIndex) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
+  // Paired reading, for the status bar badge (docs/pageflip.md section 4). One parameter rather
+  // than a flag plus a role, because the only state worth a badge already implies both.
+  enum class PairStatus : uint8_t {
+    None,          // not configured as a pair, or configured and connected -- either way, no badge
+    OfflineLeft,   // configured, peer absent, and this device is the left half
+    OfflineRight,  // ... and the right half
+  };
   void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
                      std::string title, const int paddingBottom = 0, const int textYOffset = 0,
                      const bool fillMargin = true, const bool isPageBookmarked = false,
-                     const bool pageCountEstimated = false) const;
+                     const bool pageCountEstimated = false, const PairStatus pairStatus = PairStatus::None) const;
   void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;
   virtual void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
                              int contentStartX = 0, int contentWidth = 0) const;
