@@ -413,6 +413,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           // mid-sentence in the force-sync messages ("the right device has...").
                           // A menu wants a label, so these are the capitalised direction strings.
                           {StrId::STR_DIR_LEFT, StrId::STR_DIR_RIGHT}, "pageflipRole", StrId::STR_CAT_READER),
+        // The paired device's MAC: persisted + web-exposed, but category-less so it stays out of
+        // the on-device Settings screen. It is chosen on the pairing screen, where the device is
+        // picked off a list of what is actually in the room -- a menu entry here would be a
+        // keyboard prompt for seventeen characters of hexadecimal.
+        SettingInfo::String(StrId::STR_PAGEFLIP_PEER, &SETTINGS.pageflipPeerMac[0],
+                            sizeof(SETTINGS.pageflipPeerMac), "pageflipPeerMac"),
 #endif
     };
     // Only show tilt page turn setting when the QMI8658 IMU is present (X3)

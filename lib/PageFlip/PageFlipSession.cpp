@@ -23,6 +23,34 @@ void PageFlipSession::setBook(uint32_t newBookId, uint32_t newCompatHash) {
   // peer sitting on a high count reads every low-numbered turn as "already applied".
 }
 
+void PageFlipSession::setPeerMac(const uint8_t mac[PageFlipTransport::MAC_BYTES]) {
+  if (mac == nullptr) {
+    peerMacSet = false;
+    std::memset(peerMac, 0, sizeof(peerMac));
+    return;
+  }
+  static constexpr uint8_t NO_MAC[PageFlipTransport::MAC_BYTES] = {};
+  if (std::memcmp(mac, NO_MAC, sizeof(peerMac)) == 0) {
+    peerMacSet = false;
+    std::memset(peerMac, 0, sizeof(peerMac));
+    return;
+  }
+  if (peerMacSet && std::memcmp(peerMac, mac, sizeof(peerMac)) == 0) return;
+
+  std::memcpy(peerMac, mac, sizeof(peerMac));
+  peerMacSet = true;
+  // Everything concluded so far was concluded with somebody else. A join classifies two positions
+  // against each other, and the other one may now be a device this session will not even listen to.
+  beginJoinRound();
+  cancelSync();
+}
+
+bool PageFlipSession::isPairedSender(const uint8_t senderMac[PageFlipTransport::MAC_BYTES]) const {
+  if (!peerMacSet) return true;  // never paired: the bookId and compatHash filters are all there is
+  if (senderMac == nullptr) return false;
+  return std::memcmp(peerMac, senderMac, PageFlipTransport::MAC_BYTES) == 0;
+}
+
 bool PageFlipSession::begin() { return transport.begin(); }
 
 void PageFlipSession::end() { transport.end(); }
@@ -261,10 +289,21 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
   uint8_t senderMac[PageFlipTransport::MAC_BYTES] = {};
   if (!transport.poll(buffer, sizeof(buffer), length, senderMac)) return false;
 
+  // A device the user did not pair with is not a peer, and the packet is not contact (section 8.1).
+  // Returned as "nothing arrived" rather than as an Ignore decision, deliberately: an Ignore is
+  // still peer contact, and contact holds this device awake and feeds the presence timer. A
+  // stranger reading the same book would otherwise keep the reader from sleeping.
+  if (!isPairedSender(senderMac)) return false;
+
   // Anything that is not a decodable PageFlip turn is not peer contact, and returning false here is
   // what keeps a stray broadcaster on the channel from holding the device awake (section 4).
   PageFlipMessage message = PageFlipMessage::Turn;
   if (!PageFlipPacket::peekMessage(buffer, length, message)) return false;
+
+  // A pairing screen somewhere in the room, which has nothing to say to a reader -- not even that
+  // somebody is there. Rejected explicitly rather than left to fall through to decodeTurn, so the
+  // rule survives the next message type being added.
+  if (message == PageFlipMessage::PairBeacon) return false;
 
   decision = PageFlipDecision{};
 

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "PageFlip/PageFlipMac.h"
 #include "PageFlip/PageFlipPacket.h"
 #include "PageFlip/PageFlipTransport.h"
 
@@ -616,6 +617,94 @@ TEST(PageFlipPacket, PeekMessageDispatchesBeforeDecoding) {
   std::vector<uint8_t> unknown = wire;
   unknown[3] = 0x7F;
   EXPECT_FALSE(PageFlipPacket::peekMessage(unknown.data(), unknown.size(), message));
+}
+
+// The pairing beacon (section 8.1): the header and the role bit, and nothing else.
+TEST(PageFlipPacket, PairBeaconRoundTrips) {
+  uint8_t wire[PageFlipPacket::PAIR_BEACON_BYTES] = {};
+  size_t length = 0;
+  ASSERT_TRUE(PageFlipPacket::encodePairBeacon(PageFlipRole::Right, wire, sizeof(wire), length));
+  EXPECT_EQ(length, PageFlipPacket::PAIR_BEACON_BYTES);
+
+  PageFlipRole role = PageFlipRole::Left;
+  ASSERT_TRUE(PageFlipPacket::decodePairBeacon(wire, length, role));
+  EXPECT_EQ(role, PageFlipRole::Right);
+
+  ASSERT_TRUE(PageFlipPacket::encodePairBeacon(PageFlipRole::Left, wire, sizeof(wire), length));
+  ASSERT_TRUE(PageFlipPacket::decodePairBeacon(wire, length, role));
+  EXPECT_EQ(role, PageFlipRole::Left);
+}
+
+TEST(PageFlipPacket, PairBeaconIsNotAnyOtherMessage) {
+  uint8_t wire[PageFlipPacket::PAIR_BEACON_BYTES] = {};
+  size_t length = 0;
+  ASSERT_TRUE(PageFlipPacket::encodePairBeacon(PageFlipRole::Left, wire, sizeof(wire), length));
+
+  PageFlipMessage message = PageFlipMessage::Turn;
+  ASSERT_TRUE(PageFlipPacket::peekMessage(wire, length, message));
+  EXPECT_EQ(message, PageFlipMessage::PairBeacon);
+
+  // Decoding one as a reading message would be reading five bytes as twenty-five.
+  PageFlipTurn turn;
+  EXPECT_FALSE(PageFlipPacket::decodeTurn(wire, length, turn));
+  PageFlipHello hello;
+  EXPECT_FALSE(PageFlipPacket::decodeHello(wire, length, hello));
+
+  // And a turn is not a beacon, whatever length it is offered at.
+  const std::vector<uint8_t> turnWire = encoded(sampleTurn());
+  PageFlipRole role = PageFlipRole::Left;
+  EXPECT_FALSE(PageFlipPacket::decodePairBeacon(turnWire.data(), turnWire.size(), role));
+}
+
+TEST(PageFlipPacket, PairBeaconRejectsAShortBuffer) {
+  uint8_t wire[PageFlipPacket::PAIR_BEACON_BYTES] = {};
+  size_t length = 0;
+  EXPECT_FALSE(PageFlipPacket::encodePairBeacon(PageFlipRole::Left, wire, sizeof(wire) - 1, length));
+  ASSERT_TRUE(PageFlipPacket::encodePairBeacon(PageFlipRole::Left, wire, sizeof(wire), length));
+
+  PageFlipRole role = PageFlipRole::Right;
+  EXPECT_FALSE(PageFlipPacket::decodePairBeacon(wire, length - 1, role));
+}
+
+// The paired device's identity, moving between the radio and settings (section 8.1).
+TEST(PageFlipMacText, FormatsCanonically) {
+  const uint8_t mac[PageFlipTransport::MAC_BYTES] = {0x02, 0x50, 0x46, 0x00, 0x0A, 0xFF};
+  char text[PageFlipMac::TEXT_LENGTH] = {};
+  ASSERT_TRUE(PageFlipMac::format(mac, text, sizeof(text)));
+  EXPECT_STREQ(text, "02:50:46:00:0A:FF");
+
+  EXPECT_FALSE(PageFlipMac::format(mac, text, sizeof(text) - 1));
+}
+
+TEST(PageFlipMacText, RoundTripsThroughText) {
+  const uint8_t mac[PageFlipTransport::MAC_BYTES] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11};
+  char text[PageFlipMac::TEXT_LENGTH] = {};
+  ASSERT_TRUE(PageFlipMac::format(mac, text, sizeof(text)));
+
+  uint8_t parsed[PageFlipTransport::MAC_BYTES] = {};
+  ASSERT_TRUE(PageFlipMac::parse(text, parsed));
+  EXPECT_EQ(std::memcmp(mac, parsed, sizeof(mac)), 0);
+
+  // Lower case is what a user copying one out of another tool will paste in.
+  uint8_t lower[PageFlipTransport::MAC_BYTES] = {};
+  ASSERT_TRUE(PageFlipMac::parse("de:ad:be:ef:00:11", lower));
+  EXPECT_EQ(std::memcmp(mac, lower, sizeof(mac)), 0);
+}
+
+// Every rejection here is a string that must not become a MAC of zeroes: a device paired with
+// nobody listens to nobody, which on screen looks exactly like a peer that is switched off.
+TEST(PageFlipMacText, RejectsAnythingButTheCanonicalForm) {
+  uint8_t parsed[PageFlipTransport::MAC_BYTES] = {0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA};
+  EXPECT_FALSE(PageFlipMac::parse("", parsed));
+  EXPECT_FALSE(PageFlipMac::parse(nullptr, parsed));
+  EXPECT_FALSE(PageFlipMac::parse("02:50:46:00:0A", parsed));
+  EXPECT_FALSE(PageFlipMac::parse("02:50:46:00:0A:FF:11", parsed));
+  EXPECT_FALSE(PageFlipMac::parse("02-50-46-00-0A-FF", parsed));
+  EXPECT_FALSE(PageFlipMac::parse("02:50:46:00:0A:GG", parsed));
+  EXPECT_FALSE(PageFlipMac::parse("2:50:46:00:0A:FF", parsed));
+
+  // And a rejected string leaves the output alone rather than half written.
+  for (const uint8_t byte : parsed) EXPECT_EQ(byte, 0xAA);
 }
 
 }  // namespace

@@ -9,8 +9,6 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
-// The one radio PageFlip and WiFi have to share (docs/pageflip.md section 6).
-#include <WiFi.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -31,6 +29,7 @@
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncActivity.h"
 #include "MappedInputManager.h"
+#include "PageFlipRadio.h"
 #include "ProgressMapper.h"
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
@@ -1159,7 +1158,19 @@ PageFlipRole EpubReaderActivity::pageflipConfiguredRole() {
   return SETTINGS.pageflipRole == CrossPointSettings::PAGEFLIP_ROLE_RIGHT ? PageFlipRole::Right : PageFlipRole::Left;
 }
 
-bool EpubReaderActivity::pageflipWifiActive() { return WiFi.getMode() != WIFI_MODE_NULL; }
+bool EpubReaderActivity::pageflipApplyPeerMac() {
+  if (!pageflip) return false;
+  uint8_t mac[PageFlipTransport::MAC_BYTES] = {};
+  // An unset or malformed setting is "no paired device", never a MAC of zeroes: a device that
+  // believed it was paired with 00:00:00:00:00:00 would listen to nobody at all, which looks
+  // exactly like a peer that is switched off.
+  if (!PageFlipMac::parse(SETTINGS.pageflipPeerMac, mac)) {
+    pageflip->setPeerMac(nullptr);
+    return false;
+  }
+  pageflip->setPeerMac(mac);
+  return true;
+}
 
 bool EpubReaderActivity::pageflipBadgeDue() const {
   if (!SETTINGS.pageflipEnabled || pageflipPeerPresent) return false;
@@ -1186,7 +1197,7 @@ void EpubReaderActivity::pageflipBegin() {
   //
   // Re-asked every pump rather than once, and that is the whole of the resume path: the link comes
   // back when WiFi goes away, re-pinning the channel by construction, because begin() sets it.
-  if (pageflipWifiActive()) {
+  if (pageflipWifiHoldsRadio()) {
     if (!pageflipWifiSuspended) {
       pageflipWifiSuspended = true;
       LOG_INF("ERS", "WiFi has the radio; paired reading is suspended until it is done");
@@ -1229,8 +1240,11 @@ void EpubReaderActivity::pageflipBegin() {
   session->setBook(pageflipBookId, 0);
   pageflipLinkUpMs = millis();
   pageflip = std::move(session);
-  LOG_INF("ERS", "PageFlip link up as %s, waiting for a peer",
-          pageflipConfiguredRole() == PageFlipRole::Left ? "left" : "right");
+  // Before the first packet can arrive, so a stranger's greeting is never even the first thing this
+  // session hears.
+  const bool paired = pageflipApplyPeerMac();
+  LOG_INF("ERS", "PageFlip link up as %s, %s", pageflipConfiguredRole() == PageFlipRole::Left ? "left" : "right",
+          paired ? "listening for the paired device" : "waiting for a peer");
 }
 
 void EpubReaderActivity::pageflipEnd() {
@@ -1543,6 +1557,11 @@ void EpubReaderActivity::pageflipReconcileSettings() {
     // send one on its own.
     pageflipCompatHash = 0;
   }
+
+  // And the paired device, for the same reason and by the same route: the web UI can clear or
+  // replace it under a live reader. setPeerMac() re-runs the join itself when the value really
+  // changes, because everything the old join concluded was concluded with somebody else.
+  pageflipApplyPeerMac();
 }
 
 void EpubReaderActivity::pageflipPump() {

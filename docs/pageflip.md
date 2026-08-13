@@ -1043,8 +1043,47 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
 | Auto-sleep coupling | `lastActivityTime`, main.cpp:494-499 |
 | Compat hash source | `CrossPointSettings::readerRenderSpec()`, [CrossPointSettings.cpp:251-265](../src/CrossPointSettings.cpp) |
 | Settings force-sync | the `ReaderRenderSpec`-feeding subset only (§5.1), via `JsonSettingsIO` |
-| Settings | ✅ `pageflipEnabled`, `pageflipRole` in `CrossPointSettings` + `SettingsList.h`. `pageflipPeerMac[6]` is **not** a settings entry — it is a receive-path filter that does not exist yet, and storing it without one buys nothing (§9 step 8) |
+| Settings | ✅ `pageflipEnabled`, `pageflipRole`, `pageflipPeerMac` in `CrossPointSettings` + `SettingsList.h`. The MAC is stored as text and carries no category, so it persists and appears in the web UI but stays out of the on-device menu — it is chosen on the pairing screen (§8.1) |
 | Build gate | `-DFREEINK_CAP_PAGEFLIP=1`, with stubs so it compiles out cleanly. Note master has only `FREEINK_DEVICE_*` (platformio.ini:155-202) — the `FREEINK_CAP_*` capability convention comes from `feat-bluetooth`, so we would be adopting it, not following it |
+
+## 8.1 Pairing — which device, not just which book
+
+Until this existed the receive path filtered on `bookId` and `compatHash`: *somebody reading the
+same book, laid out the same way*. In a house with one pair that is indistinguishable from "my
+partner". In a room with two pairs reading the same book it is wrong, and it is wrong in the way
+that is hardest to diagnose — your pages move on their own, and the device doing it is across the
+room in somebody else's hands.
+
+`PageFlipSession::setPeerMac()` adds the missing filter, at the single choke point every message
+already passes through: the top of `poll()`, before the type is even peeked. Three properties are
+deliberate.
+
+- **A stranger's packet returns `false`, not an `Ignore` decision.** An `Ignore` is still *contact* —
+  it feeds `lastPeerContactMs`, which holds the reader awake and drives presence expiry. A device
+  reading nearby would otherwise keep this one from ever sleeping.
+- **The MAC compared is the transport's**, not one carried in the packet. Identity a sender can
+  assert is not identity.
+- **An unparsed or empty setting means "listen to anyone", never a MAC of zeroes.** A device paired
+  with `00:00:00:00:00:00` listens to nobody at all, which on screen is indistinguishable from a
+  partner whose battery died — the failure would present as the peer, not as the setting.
+
+**Pairing is per device, and therefore asymmetric.** If you pair on one half and not the other, the
+paired half ignores strangers and the unpaired half still accepts anyone. The pair still works, so
+nothing looks wrong; the protection is simply half there. That is a real state a user produces by
+pairing on one device and walking away, so both devices have to be taken through the screen, and
+the screen says so.
+
+The discovery message is a **beacon** (`PageFlipMessage::PairBeacon`) — the packet header, the role
+bit, and nothing else. It carries no book and no layout because pairing happens before either
+exists, and the payload that matters is the sender's MAC, which rides underneath as transport
+identity. `PageFlipSession` rejects it explicitly rather than letting it fall through to
+`decodeTurn`: a pairing screen somewhere in the building has nothing to say to a reader, not even
+that somebody is there.
+
+Beacons only go out while a device is *on* the pairing screen, which makes discovery symmetric by
+construction — you cannot pair with a device whose owner has not also asked to pair. The alternative,
+discovering anything that had ever transmitted, would list every reader in range and put the burden
+of "is that mine?" on a hex string.
 
 ---
 

@@ -373,6 +373,27 @@ bool decodeJoinResume(const uint8_t* data, size_t length, PageFlipJoinResume& re
   return true;
 }
 
+bool encodePairBeacon(const PageFlipRole role, uint8_t* output, size_t capacity, size_t& outputLength) {
+  if (output == nullptr || capacity < PAIR_BEACON_BYTES) return false;
+
+  writeU16(output + OFF_MAGIC, PageFlipPacket::MAGIC);
+  output[OFF_VERSION] = PageFlipPacket::PROTOCOL_VERSION;
+  output[OFF_MESSAGE] = static_cast<uint8_t>(PageFlipMessage::PairBeacon);
+  output[OFF_FLAGS] = (role == PageFlipRole::Right) ? FLAG_ROLE_RIGHT : 0;
+
+  outputLength = PAIR_BEACON_BYTES;
+  return true;
+}
+
+bool decodePairBeacon(const uint8_t* data, size_t length, PageFlipRole& role) {
+  if (!hasPageFlipHeader(data, length)) return false;
+  if (data[OFF_MESSAGE] != static_cast<uint8_t>(PageFlipMessage::PairBeacon)) return false;
+  if (length < PAIR_BEACON_BYTES) return false;
+
+  role = (data[OFF_FLAGS] & FLAG_ROLE_RIGHT) ? PageFlipRole::Right : PageFlipRole::Left;
+  return true;
+}
+
 bool peekMessage(const uint8_t* data, size_t length, PageFlipMessage& message) {
   if (!hasPageFlipHeader(data, length)) return false;
   switch (static_cast<PageFlipMessage>(data[OFF_MESSAGE])) {
@@ -393,6 +414,9 @@ bool peekMessage(const uint8_t* data, size_t length, PageFlipMessage& message) {
       return true;
     case PageFlipMessage::JoinResume:
       message = PageFlipMessage::JoinResume;
+      return true;
+    case PageFlipMessage::PairBeacon:
+      message = PageFlipMessage::PairBeacon;
       return true;
   }
   return false;  // a message type this build does not know

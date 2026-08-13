@@ -293,6 +293,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   static constexpr uint8_t PAGEFLIP_ROLE_LEFT = 0;
   static constexpr uint8_t PAGEFLIP_ROLE_RIGHT = 1;
   uint8_t pageflipRole = PAGEFLIP_ROLE_LEFT;
+  // The device this one is paired with, as "AA:BB:CC:DD:EE:FF" (docs/pageflip.md section 8.1).
+  // Empty means "listen to anyone reading the same book", which is what an unpaired device does and
+  // is fine alone in a house -- it is a second pair in the same room that makes it wrong.
+  //
+  // Text rather than six bytes because settings persistence is driven by the entries in
+  // SettingsList.h, which store uint8_t or char[]; and because a MAC in the web UI's JSON is
+  // something a user can read, copy between devices, and clear.
+  static constexpr size_t PAGEFLIP_PEER_MAC_LENGTH = 18;  // 17 characters plus the terminator
+  char pageflipPeerMac[PAGEFLIP_PEER_MAC_LENGTH] = "";
 
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;

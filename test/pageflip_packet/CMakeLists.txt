@@ -1,5 +1,6 @@
 add_executable(PageFlipPacketTest
   PageFlipPacketTest.cpp
+  ${REPO_ROOT}/lib/PageFlip/PageFlipMac.cpp
   ${REPO_ROOT}/lib/PageFlip/PageFlipPacket.cpp
 )
 

@@ -51,6 +51,12 @@ enum class PageFlipMessage : uint8_t {
   SyncApply = 5,
   // The user's answer to a divergent join (section 4.3).
   JoinResume = 6,
+  // "I am a CrossPoint device, I am on the pairing screen, and this is the half I am set to."
+  // Section 8.1. Carries no book and no layout, because pairing happens before either exists -- the
+  // payload a reader actually needs is the sender's MAC, and that comes from the transport rather
+  // than from the packet. Deliberately not handled by PageFlipSession: a reading device must not
+  // count somebody else's pairing screen as contact.
+  PairBeacon = 7,
 };
 
 // A page turn that has already been applied on the sender.
@@ -162,6 +168,11 @@ inline constexpr size_t SYNC_ANSWER_BYTES = 18;
 inline constexpr size_t SYNC_APPLY_BYTES = 13;
 // header(5) + compatHash(4) + bookId(4) + spineIndex(4) + visibleTextOffset(4)
 inline constexpr size_t JOIN_RESUME_BYTES = 21;
+// The pairing beacon is the header and nothing else: magic, version, message, and the role in the
+// flag bit every other message already puts it in. Everything pairing needs beyond that is the
+// sender's MAC, which is transport identity, not payload -- and it has to be, because the MAC the
+// filter compares against must be the one the radio reports rather than one a packet claims.
+inline constexpr size_t PAIR_BEACON_BYTES = 5;
 
 // Writes a Turn packet. Returns false without touching `output` if `capacity` is too small.
 bool encodeTurn(const PageFlipTurn& turn, uint8_t* output, size_t capacity, size_t& outputLength);
@@ -195,6 +206,11 @@ bool decodeSyncApply(const uint8_t* data, size_t length, PageFlipSyncApply& appl
 // The divergent join's answer (section 4.3). Same rules again.
 bool encodeJoinResume(const PageFlipJoinResume& resume, uint8_t* output, size_t capacity, size_t& outputLength);
 bool decodeJoinResume(const uint8_t* data, size_t length, PageFlipJoinResume& resume);
+
+// The pairing beacon (section 8.1). Role is the only thing on the wire; the identity that matters
+// rides underneath it, in the transport's sender MAC.
+bool encodePairBeacon(PageFlipRole role, uint8_t* output, size_t capacity, size_t& outputLength);
+bool decodePairBeacon(const uint8_t* data, size_t length, PageFlipRole& role);
 
 // Peeks the message type without validating the rest, so a receive loop can dispatch before
 // decoding. Returns false when the buffer is not a PageFlip packet at all.

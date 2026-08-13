@@ -16,9 +16,11 @@ constexpr const char* TEST_BASE_PORT = "47590";
 constexpr uint32_t BOOK = 0xB00C0DE5u;
 constexpr uint32_t COMPAT = 0xC0FFEE01u;
 
-bool startOnSlot(PageFlipUdpTransport& transport, const char* slot) {
+bool startOnSlot(PageFlipUdpTransport& transport, const char* slot, const char* slots = "2") {
   ::setenv("CROSSPOINT_PAGEFLIP_PORT", TEST_BASE_PORT, 1);
-  ::setenv("CROSSPOINT_PAGEFLIP_SLOTS", "2", 1);
+  // Every instance in one test has to agree on the count: broadcast() sends to every slot but its
+  // own, so a two-slot device in a three-device test would simply never speak to the third.
+  ::setenv("CROSSPOINT_PAGEFLIP_SLOTS", slots, 1);
   ::setenv("CROSSPOINT_PAGEFLIP_SLOT", slot, 1);
   return transport.begin();
 }
@@ -935,6 +937,145 @@ TEST_F(PageFlipSessionTest, OfferForAnotherBookIsNotOurExchange) {
   ASSERT_TRUE(pollWithRetry(pair.right, decision));
   EXPECT_EQ(decision.action, PageFlipAction::Ignore);
   EXPECT_EQ(decision.settings, nullptr);
+}
+
+// Three devices in one room, all on the same book with the same layout (docs/pageflip.md section
+// 8.1). Without a paired MAC the bookId and compatHash filters admit every one of them, and the
+// third device's presses move the pair's pages.
+struct Room {
+  PageFlipUdpTransport leftTransport;
+  PageFlipUdpTransport rightTransport;
+  PageFlipUdpTransport strangerTransport;
+  PageFlipSession left{leftTransport, PageFlipRole::Left};
+  PageFlipSession right{rightTransport, PageFlipRole::Right};
+  // Configured as a left half deliberately: a stranger is not a badly configured peer, it is
+  // somebody else's device, and it will happily be the left half of its own pair.
+  PageFlipSession stranger{strangerTransport, PageFlipRole::Left};
+
+  bool start() {
+    if (!startOnSlot(leftTransport, "0", "3") || !startOnSlot(rightTransport, "1", "3") ||
+        !startOnSlot(strangerTransport, "2", "3")) {
+      return false;
+    }
+    left.setBook(BOOK, COMPAT);
+    right.setBook(BOOK, COMPAT);
+    stranger.setBook(BOOK, COMPAT);
+    return true;
+  }
+
+  bool pairLeftToRight() {
+    uint8_t mac[PageFlipTransport::MAC_BYTES] = {};
+    if (!rightTransport.localMac(mac)) return false;
+    left.setPeerMac(mac);
+    return true;
+  }
+};
+
+// Nothing arrives, rather than an Ignore decision: an Ignore is still peer contact, and contact
+// holds the reader awake and feeds the presence timer. A stranger must cost this device nothing.
+TEST_F(PageFlipSessionTest, AStrangersTurnDoesNotEvenArrive) {
+  Room room;
+  ASSERT_TRUE(room.start());
+  ASSERT_TRUE(room.pairLeftToRight());
+
+  ASSERT_TRUE(room.stranger.announceLocalTurn(true, 5, 9, false));
+
+  PageFlipDecision decision;
+  EXPECT_FALSE(pollWithRetry(room.left, decision));
+  EXPECT_EQ(room.left.getTurnSeq(), 0u);
+}
+
+// The negative control for the test above: unpaired, that same packet is applied.
+TEST_F(PageFlipSessionTest, WithoutAPairedDeviceAStrangerIsAPeer) {
+  Room room;
+  ASSERT_TRUE(room.start());
+
+  ASSERT_TRUE(room.stranger.announceLocalTurn(true, 5, 9, false));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(room.left, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::AdvanceTwo);
+}
+
+TEST_F(PageFlipSessionTest, ThePairedDeviceIsStillHeard) {
+  Room room;
+  ASSERT_TRUE(room.start());
+  ASSERT_TRUE(room.pairLeftToRight());
+
+  ASSERT_TRUE(room.right.announceLocalTurn(true, 3, 8, false));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(room.left, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::AdvanceTwo);
+  EXPECT_TRUE(decision.applyRoleOffset);
+}
+
+TEST_F(PageFlipSessionTest, ClearingThePairListensToAnyoneAgain) {
+  Room room;
+  ASSERT_TRUE(room.start());
+  ASSERT_TRUE(room.pairLeftToRight());
+  EXPECT_TRUE(room.left.hasPeerMac());
+
+  room.left.setPeerMac(nullptr);
+  EXPECT_FALSE(room.left.hasPeerMac());
+
+  ASSERT_TRUE(room.stranger.announceLocalTurn(true, 5, 9, false));
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(room.left, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::AdvanceTwo);
+}
+
+// An all-zero MAC is the absence of a value, not a device to listen for. A session that took it
+// literally would filter out every packet in the world and look like a peer that never showed up.
+TEST_F(PageFlipSessionTest, AnAllZeroMacIsNotADevice) {
+  Room room;
+  ASSERT_TRUE(room.start());
+  const uint8_t zeros[PageFlipTransport::MAC_BYTES] = {};
+  room.left.setPeerMac(zeros);
+  EXPECT_FALSE(room.left.hasPeerMac());
+
+  ASSERT_TRUE(room.right.announceLocalTurn(true, 3, 8, false));
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(room.left, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::AdvanceTwo);
+}
+
+// A pairing screen in the room says nothing to a reader -- not even that somebody is there. Sent
+// from the PAIRED device, so it is the message type being rejected here and not the sender.
+TEST_F(PageFlipSessionTest, APairBeaconIsNotPeerContact) {
+  Room room;
+  ASSERT_TRUE(room.start());
+  ASSERT_TRUE(room.pairLeftToRight());
+
+  uint8_t beacon[PageFlipPacket::PAIR_BEACON_BYTES] = {};
+  size_t length = 0;
+  ASSERT_TRUE(PageFlipPacket::encodePairBeacon(PageFlipRole::Right, beacon, sizeof(beacon), length));
+  ASSERT_TRUE(room.rightTransport.broadcast(beacon, length));
+
+  PageFlipDecision decision;
+  EXPECT_FALSE(pollWithRetry(room.left, decision));
+}
+
+// Pairing with somebody else mid-session invalidates the classification, exactly as a role change
+// does: a join is a statement about two positions, and one of them now belongs to a device this
+// session will not listen to.
+TEST_F(PageFlipSessionTest, PairingWithAnotherDeviceRestartsTheJoin) {
+  Room room;
+  ASSERT_TRUE(room.start());
+
+  ASSERT_TRUE(room.stranger.announceHello(2, 0, 400));
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(room.left, decision));
+  ASSERT_EQ(decision.action, PageFlipAction::PeerHello);
+  ASSERT_TRUE(decision.joinProbe);
+
+  ASSERT_TRUE(room.pairLeftToRight());
+
+  // The probe was raised against the stranger's offset, and the round it belonged to is gone.
+  PageFlipJoinResolution resolution;
+  EXPECT_FALSE(
+      room.left.answerJoin(decision.joinRound, PageFlipJoinVerdict::Adjacent, 2, 0, 400, resolution));
+  EXPECT_FALSE(resolution.resolved);
 }
 
 }  // namespace

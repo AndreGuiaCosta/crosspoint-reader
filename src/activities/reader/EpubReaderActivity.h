@@ -7,6 +7,7 @@
 
 #ifdef FREEINK_CAP_PAGEFLIP
 #include <PageFlipCompat.h>
+#include <PageFlipMac.h>
 #include <PageFlipSession.h>
 #include <PageFlipTransportFactory.h>
 
@@ -330,10 +331,9 @@ class EpubReaderActivity final : public Activity {
   // Which half of the spread this device is, from settings. Nothing can discover it -- only the
   // user knows which device they put on the left.
   static PageFlipRole pageflipConfiguredRole();
-  // Whether WiFi holds the radio (docs/pageflip.md section 6). Only ever asked with the link down:
-  // bringing it up puts the radio in WIFI_STA itself, so with the link up this answers "yes" about
-  // this device's own pair.
-  static bool pageflipWifiActive();
+  // Reads SETTINGS.pageflipPeerMac into the session, or clears it (docs/pageflip.md section 8.1).
+  // Returns true when a paired device is configured.
+  bool pageflipApplyPeerMac();
   // Whether the status bar should carry the "configured but alone" badge right now.
   bool pageflipBadgeDue() const;
   // Brings the link up or down and adopts a role change, per pump. Neither setting has a

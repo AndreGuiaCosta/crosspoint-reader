@@ -118,6 +118,17 @@ class PageFlipSession {
   // this book with a different compatHash reports Mismatch rather than desyncing silently.
   void setBook(uint32_t bookId, uint32_t compatHash);
 
+  // The one device this session will listen to (docs/pageflip.md section 8.1). Without it the
+  // filters are bookId and compatHash, which say "somebody reading the same book, laid out the same
+  // way" -- true of any X4 in the room, and the pair a stranger joins is a pair whose pages move on
+  // their own. Pass nullptr or an all-zero MAC to listen to anyone, which is what a device that has
+  // never been through the pairing screen does.
+  //
+  // Filtering is per device and therefore asymmetric: pairing on one half and not the other leaves
+  // that half open. It is a real state and it fails quietly, so the pairing screen tells both users.
+  void setPeerMac(const uint8_t mac[PageFlipTransport::MAC_BYTES]);
+  bool hasPeerMac() const { return peerMacSet; }
+
   bool begin();
   void end();
   bool isStarted() const { return transport.isStarted(); }
@@ -231,8 +242,15 @@ class PageFlipSession {
   // one rendered faster than the other.
   bool canCompareLayout(uint32_t peerHash) const { return compatHash != 0 && peerHash != 0; }
 
+  // Whether a packet from this sender is one this session will look at at all.
+  bool isPairedSender(const uint8_t senderMac[PageFlipTransport::MAC_BYTES]) const;
+
   PageFlipTransport& transport;
   PageFlipRole role;
+  // The paired device, when the user has chosen one. Held as a flag plus the bytes rather than "all
+  // zeroes means none", so a transport that cannot report a MAC can never be mistaken for a peer.
+  bool peerMacSet = false;
+  uint8_t peerMac[PageFlipTransport::MAC_BYTES] = {};
   uint32_t bookId = 0;
   uint32_t compatHash = 0;
   uint32_t turnSeq = 0;
