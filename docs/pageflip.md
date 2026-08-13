@@ -159,7 +159,7 @@ Broadcast by whichever device turned the page. As implemented
 ```
 magic        u16   'PF'  (0x50 0x46 on the wire — little-endian throughout)
 protoVer     u8
-message      u8    Turn | Hello
+message      u8    Turn | Hello | SyncOffer | SyncAnswer | SyncApply | JoinResume
 flags        u8    role(left/right), dir(fwd/back), atBookEnd
 compatHash   u32   see §5
 bookId       u32   existing EPUB path hash
@@ -168,12 +168,20 @@ spineIndex   i32   sender's own resulting position
 pageNumber   i32
 ```
 
+A **hello** is these 25 bytes plus four more: the join's `visibleTextOffset` (§4.2). The offset is
+*appended* past the turn's last field rather than inserted, so every shared field stays where a
+turn's is and one set of constants still writes both. Its flags byte carries three more bits the
+turn does not use — the join verdict (two bits) and "this greeting starts a new join". The
+force-sync messages of §5.1 and the resume of §4.3 share the header and the hash/bookId pair, then
+diverge.
+
 Three things settled while building it:
 
 - **`message` is new** — an earlier draft of this list had no type discriminator, but §4's `HELLO`
   rides the same transport, so one is needed. Adding it now costs a byte; adding it later breaks the
   wire. `peekMessage()` reads it from the 4-byte header alone, so a receive loop dispatches before
-  committing to a decode.
+  committing to a decode. It has since earned its place four times over: the three force-sync
+  messages and the resume choice all ride the same transport.
 - **The packet *is* the ESP-NOW payload.** The SDK's `encodePacket()` framing is not used: its
   16-byte header would nearly double a 25-byte packet to carry a type, session id and sequence that
   `message` / `bookId` / `turnSeq` already cover. PageFlip wraps the SDK's *transport*
@@ -378,6 +386,35 @@ Required behaviour:
 - **Role is fixed, authority is not a concept.** Left/right is a per-device display setting that
   sets the join offset (§3). Either device may originate a turn; neither is in charge.
 
+### Presence has to expire, and nothing in the protocol was expiring it
+
+Presence is what licenses advancing by two. A peer that powers off or walks out of range says
+nothing on its way out, so without an expiry a device goes on turning **two pages per press with
+nothing on the other end showing the second one** — solo reading that silently skips every other
+page. That is the worst failure mode the feature has, because it reads as the *book* being broken
+rather than the pair.
+
+It cannot be expired on silence alone, because a settled pair has nothing to say: until step 5 the
+only evidence of a peer was a page turn, so two devices sitting idle produced no traffic at all.
+Hence a **heartbeat** — the same "I am here, this is my layout, this is where I am" packet the
+mismatch path already answers greetings with. It asks for nothing back and starts no join round,
+which is exactly what both jobs need: two devices doing it do not talk each other into an
+ever-growing exchange, and a heartbeat that restarted the join would re-classify the pair every
+couple of seconds.
+
+Presence drops after four missed heartbeats, and the pair falls back to one page per press with a
+notice. Two constraints on the rate:
+
+- It has to sit comfortably inside the auto-sleep activity window above, or a device being read
+  from but not pressed still sleeps out from under its reader — the heartbeat is what finally makes
+  that bullet work, since before it the window could only ever be satisfied just after a turn.
+- §7's duty cycling will want to revisit it. It is a power knob, and it is the one number in this
+  section chosen for correctness rather than measured.
+
+Resolving the content anchor for each heartbeat would be a file read once the chapter finalizes, so
+it is cached per position: a heartbeat for a page the reader has not left costs nothing, and the
+cache is dropped whenever the pagination moves.
+
 ### 4.1 Each device persists the page it was actually showing
 
 Each device writes its own `progress.bin` with **the page it was displaying at disconnect** — the
@@ -430,6 +467,57 @@ booleans:
 (testing the reverse direction from the other device's position) would require loading a section,
 possibly a whole chapter, that the testing device does not have.
 
+### The table is missing the most common join, and it is the one this step exists for
+
+Two devices on **the same page**. That is what a book opened for the first time on both looks like,
+and what two devices resumed from the same synced progress look like. Under the table above it
+falls to no/no — **Divergent** — so the pair would be prompted to choose between two positions that
+are the same position, on essentially every first pairing. It is also the only join that has to
+*create* the spread rather than recognise one: without it the pair sits at `(P, P)` forever, which
+is exactly the lockstep behaviour step 2 deliberately left in place for step 5 to remove.
+
+So there is a fourth case, **Identical** → *the right device steps forward one page; the left stays
+where it is.* Silent, and it is where the one-page offset comes from in the common case.
+
+**It cannot be read off the two booleans.** From the same offset each device finds its own next
+page somewhere the other is not, so *both* answer "no" — indistinguishable from Divergent. It is a
+direct equality test on `(spineIndex, visibleTextOffset)`, which either device can run alone the
+moment it has the peer's position. That makes the common join one round trip instead of three, and
+it is only sound because the negotiation runs behind the layout agreement of §5: the same offset
+under two different paginations is not the same page.
+
+Two consequences worth writing down, because both were mistakes on the way in:
+
+- **The fix-up step must not be announced as a turn.** Sending it would bump `turnSeq` and the peer
+  would advance two pages off it — breaking the spread on the join that created it. It is a local
+  reposition: `applyAdvance()` without the announce flag.
+- **A device on the last page of its section can never answer "next == peer" the ordinary way.**
+  There is no next page to look up, and resolving it needs the following section, which this
+  section forbids loading. Left on the last page of chapter *N* with right on page 0 of *N+1* — an
+  ordinary aligned pair straddling a boundary — would answer Unknown forever and end up classified
+  Divergent. It does not have to load anything: **page 0 of any section starts at offset 0**, so
+  `peer.spineIndex == mine + 1 && peer.offset == 0` answers it. Gate that branch on the section
+  being *finalized* — `pageCount` is a moving watermark while a build runs (§3), so "am I on my last
+  page" has no answer until it settles.
+
+`Unknown` is a third verdict, not a missing one, and it means **retry — never "no"**. A section
+still building that answered "no" would classify a healthy pair as divergent and put a resume
+prompt in front of the user for nothing. A device that answers Unknown also asks for no reply: two
+of those would otherwise trade greetings at packet rate for as long as their builds ran, and the
+retry it actually needs is its own re-greeting once its section settles.
+
+### The classification happens in one place, reached by both devices
+
+Both verdicts become known on one device when the peer's arrives and on the other when it computes
+its own. If only the receive path could conclude, the join would work in one direction and be
+silently dead in the other — the same half-broken pair the `turnSeq` adoption rule exists to
+prevent. Everything resolves in `answerJoin()`, which every device reaches.
+
+The greeting states on the wire whether it *starts* a join rather than that being inferred from
+"asks for a reply". A reply that asks for one more round is not a fresh join, and restarting on one
+classifies the pair twice — under Identical that steps the right device forward two pages instead
+of one. The unit test for two simultaneous greetings is what caught it.
+
 ### 4.3 Divergent: prompt on both, confirm on one
 
 When the two saved positions are genuinely unrelated (the devices were read separately), **both
@@ -450,6 +538,23 @@ Resume from here?             Resume from here?
 
 The interaction *is* the choice — no "which one?" list to read, and it works the same whichever
 device you happen to be holding. Simultaneous confirms take the same lower-MAC tiebreak as §3.
+
+**The confirming device does not move.** Its position *is* the choice, which is what makes the
+gesture "pick a device" rather than "answer a question". This is worth asserting in the harness as
+much as the seek is: a device that guessed a side would silently throw away the position the other
+user was about to pick.
+
+**The prompt owns Confirm and Back, and no other button.** The settings prompt of §5.1 holds every
+button — defensible there, because the pair is genuinely broken and a page turn would be applied to
+a dead layout. A divergent join is not that: both devices are reading correctly, just not together.
+Holding every button would stop the reader dead until someone answered a prompt that has no
+timeout, in the ordinary case of one device resumed and the other opened fresh. Turning a page
+answers the prompt by reading on, and the prompt comes down — on the peer's turns as well as this
+device's, since the sentence it displays is about a page nobody is looking at any more.
+
+It shares the state machine with the force-sync prompt rather than growing one of its own. Both are
+prompt-on-both / confirm-on-one with a lower-MAC tiebreak; two prompt machines racing for Confirm
+on one screen is a bug waiting to be written.
 
 ### 4.4 Rotation re-triggers negotiation
 
@@ -900,8 +1005,27 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
    The rebuild wait deliberately reuses the existing indexing popup rather than growing a progress
    UI of its own: a settings-driven re-layout already looks like this everywhere else in the reader,
    and a second treatment for the same wait would be a new thing to explain.
-5. **Lifecycle** — §4.1–4.4: own-page persistence, join negotiation with the aligned / swapped /
-   divergent classification, resume prompt, rotation re-negotiation, peer-offline indicator.
+5. ✅ **Lifecycle** — §4.1–4.4: own-page persistence, join negotiation with the classification,
+   resume prompt, rotation re-negotiation, peer-offline indicator. This is where the pair stops
+   being a mirror and becomes a spread.
+
+   §4.1 needed no code: each device already persists `section->currentPage` plus its own content
+   offset, and `applyDeferredReposition()` lands it on reopen. The negotiation gained a fourth case
+   the design did not have (**Identical**, above) — it is the bootstrap, and without it the pair
+   never acquires the one-page offset at all. §4.4 fell out for free: a layout change already
+   re-greets, and a greeting starts a join round, so rotation re-negotiates with no recovery mode of
+   its own. The peer-offline indicator turned out to need a **heartbeat** to be implementable at all
+   (§4, presence expiry).
+
+   The pair harnesses' "the halves are byte-identical" assertion was the canary step 2 planted, and
+   it fired. It is replaced by something a straight left-versus-right comparison could not express —
+   "different" is equally true of a pair one page apart and a pair that has desynced by nine. Each
+   harness now walks a **reference instance with no peer**, one press per page, and measures every
+   screenshot against it: `run_sim_pair.sh` asserts left on pages 0, 2, 4 and right on 1, 3, 5, and
+   `run_sim_pair_forcesync.sh` asserts the repaired peer paginates like the source, one page behind.
+   Two new harnesses cover the rest: `run_sim_pair_resume.sh` (divergent — and it checks that the
+   confirming device does *not* move) and `run_sim_pair_offline.sh` (the press after the peer is
+   gone must turn exactly one page).
 6. **Coexistence** — §6 suspend/resume around WiFi.
 7. **Power tuning** — wake window sweep against measured battery.
 8. **UX polish** — pairing activity, settings entries, status indicator.
