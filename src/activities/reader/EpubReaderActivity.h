@@ -337,6 +337,10 @@ class EpubReaderActivity final : public Activity {
   // itself against. Turns keep using the page-only form -- they run between devices already proven
   // to share a layout, where a page number means the same thing on both.
   bool pageflipSettledPosition(int& page, uint32_t& visibleTextOffset);
+  // The position for a presence packet, which has to go out in places the join's anchor cannot be
+  // read at all -- end of book most of all, where there is no section and never will be until the
+  // reader leaves. Falls back to the last anchor read rather than staying silent.
+  bool pageflipPresenceAnchor(int& page, uint32_t& visibleTextOffset);
   // Drops back to solo reading and arms the notice. A peer that cannot apply our turns must not
   // gate the two-step advance.
   void pageflipReportMismatch(const PageFlipDecision& decision);

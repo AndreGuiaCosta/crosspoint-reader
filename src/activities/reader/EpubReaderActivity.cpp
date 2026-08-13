@@ -1242,6 +1242,23 @@ bool EpubReaderActivity::pageflipSettledPosition(int& page, uint32_t& visibleTex
   return true;
 }
 
+bool EpubReaderActivity::pageflipPresenceAnchor(int& page, uint32_t& visibleTextOffset) {
+  if (pageflipSettledPosition(page, visibleTextOffset)) return true;
+
+  // No section to ask. That is not a transient state at end of book: render() takes the end-panel
+  // early return before anything is loaded, and the forward crossing that got here already reset
+  // the section, so it stays null for as long as the reader sits there. Requiring a fresh anchor
+  // would silence this device permanently and the peer would call it offline four heartbeats later
+  // -- taking down the one arrangement section 3 deliberately designs for, where the right half
+  // shows the end panel and interaction stays on the left.
+  //
+  // The anchor only ever feeds a join probe, and a device with no section has nothing to join on,
+  // so the last one read is good enough to keep saying "still here".
+  if (!pageflipSettledPage(page)) return false;
+  visibleTextOffset = pageflipCachedOffset;
+  return true;
+}
+
 bool EpubReaderActivity::pageflipJoinAnswerInputs(const int32_t peerSpineIndex, const uint32_t peerVisibleTextOffset,
                                                  int& page, uint32_t& visibleTextOffset,
                                                  PageFlipJoinVerdict& verdict) {
@@ -1505,11 +1522,17 @@ void EpubReaderActivity::pageflipPump() {
   // a probe left unanswered would leave the peer waiting -- which is why it stays latched.
   if (pageflipJoinProbePending) pageflipAnswerJoinProbe();
 
-  // "Still here." Sent whether or not a peer has ever answered, because a device that boots second
-  // has to find one, and sent whether or not the layouts agree, because a mismatched peer still
-  // wants this device's hash. It asks for nothing back, so two devices doing this do not talk each
-  // other into an ever-growing exchange.
-  if (millis() - pageflipLastHeartbeatMs >= PEER_HEARTBEAT_MS && pageflipSettledPosition(settledPage, settledOffset)) {
+  // "Still here." It asks for nothing back, so two devices doing this do not talk each other into
+  // an ever-growing exchange.
+  //
+  // Only once a peer has actually been seen this session. A reader with no pair must go on paying
+  // nothing for the link -- discovery does not need this, because a device booting second sends a
+  // GREETING on its first render and the already-running device answers it. The condition is
+  // deliberately "has ever been in contact" and not "is present right now": if a transient outage
+  // expired presence on both halves at once, gating on presence would stop both heartbeats and
+  // neither could ever re-acquire the other, which is the turnSeq deadlock shape again.
+  if (lastPeerContactMs != 0 && millis() - pageflipLastHeartbeatMs >= PEER_HEARTBEAT_MS &&
+      pageflipPresenceAnchor(settledPage, settledOffset)) {
     pageflipLastHeartbeatMs = millis();
     pageflip->announcePresence(currentSpineIndex, settledPage, settledOffset);
   }

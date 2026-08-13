@@ -415,6 +415,23 @@ Resolving the content anchor for each heartbeat would be a file read once the ch
 it is cached per position: a heartbeat for a page the reader has not left costs nothing, and the
 cache is dropped whenever the pagination moves.
 
+Two conditions on when it is sent at all, both of which were wrong first:
+
+- **Only once a peer has actually been seen this session.** A reader with no pair must go on paying
+  nothing for the link — `pageflipEnd()`'s own comment says so — and pairing is not yet even a
+  setting a user can turn off (§9 step 8). Discovery does not need the heartbeat: a device booting
+  second sends a *greeting* on its first render, and the already-running device answers it. The
+  condition is "has ever been in contact", deliberately not "is present right now": if a transient
+  outage expired presence on both halves at once, gating on presence would stop both heartbeats and
+  neither could re-acquire the other — the `turnSeq` deadlock shape again.
+- **It must survive having no section.** At end of book there is none and never will be until the
+  reader leaves: `render()` takes the end-panel early return before anything is loaded, and the
+  forward crossing that got there already reset it. A heartbeat that required a readable anchor
+  would go silent forever and the peer would call the device offline — dismantling the exact
+  arrangement §3 designs for, where the right half shows the end panel and interaction stays on the
+  left. The anchor only ever feeds a join probe, and a device with no section has nothing to join
+  on, so presence falls back to the last anchor read.
+
 ### 4.1 Each device persists the page it was actually showing
 
 Each device writes its own `progress.bin` with **the page it was displaying at disconnect** — the
@@ -561,7 +578,15 @@ on one screen is a bug waiting to be written.
 `HalTiltSensor` can rotate one device mid-session, changing its viewport and therefore its
 `compatHash` (§5). Rotation does **not** pause the pair or drop it to solo — it re-runs the §4.2
 negotiation from the top. Same code path as a fresh join, so there is no separate recovery mode to
-design or test.
+design or test: a layout change already re-greets, and a greeting starts a join round.
+
+**Known, not yet handled: a wide re-pagination can prompt.** Both halves re-anchor on their content
+offsets, so a rotation that leaves them on the same page self-heals as Identical and one that
+leaves them a page apart as Aligned. But a re-pagination that moves them *further* than one page
+apart has both answering NotAdjacent, which is Divergent — a resume prompt after an ordinary
+rotation. The prompt is dismissible and a page turn takes it down (§4.3), so this is a nuisance
+rather than a trap, and it is written down here so it is recognised rather than rediscovered on
+hardware.
 
 ---
 

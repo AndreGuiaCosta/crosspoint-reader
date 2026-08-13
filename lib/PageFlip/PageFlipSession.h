@@ -162,9 +162,9 @@ class PageFlipSession {
   //  - answering a greeting from a peer this device cannot pair with (section 5). The answer
   //    carries this device's hash, which is how the other user gets told about the mismatch too,
   //    and two mismatched devices greeting each other would never stop.
-  //  - the periodic heartbeat that keeps presence alive (section 4). Presence licenses the two-step
-  //    advance, so it must expire when a peer goes away -- and a peer that powered off or walked
-  //    out of range says nothing on its way out.
+  //  - the periodic heartbeat that keeps presence alive once a peer has been seen (section 4).
+  //    Presence licenses the two-step advance, so it must expire when a peer goes away -- and a
+  //    peer that powered off or walked out of range says nothing on its way out.
   bool announcePresence(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset);
 
   // Pumped once per frame. Returns true when a packet was received and `decision` was filled; the
