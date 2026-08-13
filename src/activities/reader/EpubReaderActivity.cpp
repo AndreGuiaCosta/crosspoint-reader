@@ -1117,6 +1117,12 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
 
 #ifdef FREEINK_CAP_PAGEFLIP
 void EpubReaderActivity::applyAdvance(bool forward, uint8_t steps) {
+  // The divergent prompt describes the page this device was on when the join classified it. Once
+  // the pair has moved -- pressed here, or pressed on the peer and arriving as a turn -- that
+  // sentence is about a page nobody is looking at, and confirming it would propose a position the
+  // user never saw. Reading on is an answer.
+  if (pageflipSyncState == PageFlipSyncState::Resuming) pageflipSetSyncState(PageFlipSyncState::None);
+
   pendingAdvanceForward = forward;
   pendingAdvanceSteps = steps;
   consumePendingAdvance();
@@ -1195,6 +1201,7 @@ void EpubReaderActivity::pageflipEnd() {
   pendingPageflipSyncNotice = false;
   pageflipSyncStateSinceMs = 0;
   pageflipSyncMessage[0] = '\0';
+  pageflipResumeOwnOffset = 0;
 }
 
 bool EpubReaderActivity::pageflipSettledPage(int& page) {
@@ -1287,7 +1294,7 @@ void EpubReaderActivity::pageflipAnswerJoinProbe() {
           : resolution.joinCase == PageFlipJoinCase::Swapped  ? "devices swapped"
                                                              : "positions unrelated",
           resolution.peerSpineIndex, static_cast<unsigned>(resolution.peerVisibleTextOffset));
-  pageflipApplyJoin(resolution);
+  pageflipApplyJoin(resolution, page, offset);
 }
 
 void EpubReaderActivity::pageflipSeekToOffset(const int32_t spineIndex, const uint32_t visibleTextOffset) {
@@ -1305,7 +1312,22 @@ void EpubReaderActivity::pageflipSeekToOffset(const int32_t spineIndex, const ui
   requestUpdate();
 }
 
-void EpubReaderActivity::pageflipApplyJoin(const PageFlipJoinResolution& resolution) {
+void EpubReaderActivity::pageflipResumeTo(const PageFlipDecision& decision) {
+  // The other user chose, so this device's own prompt has nothing left to ask.
+  if (pageflipSyncState == PageFlipSyncState::Resuming) pageflipSetSyncState(PageFlipSyncState::None);
+
+  pageflipSeekToOffset(decision.spineIndex, decision.peerVisibleTextOffset);
+  // The role offset is a step, not arithmetic -- a section boundary may sit between the chosen page
+  // and this device's -- and it is applied by the pump once the section is back.
+  pendingAdvanceForward = decision.forward;
+  pendingAdvanceSteps = decision.applyRoleOffset ? 1 : 0;
+
+  snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_RESUME_DONE));
+  pageflipSetSyncState(PageFlipSyncState::Reporting);
+}
+
+void EpubReaderActivity::pageflipApplyJoin(const PageFlipJoinResolution& resolution, const int ownPage,
+                                           const uint32_t ownOffset) {
   switch (resolution.joinCase) {
     case PageFlipJoinCase::Identical:
       // The pair is on one page and owes itself a spread. The right device makes one; the left
@@ -1331,9 +1353,18 @@ void EpubReaderActivity::pageflipApplyJoin(const PageFlipJoinResolution& resolut
       break;
 
     case PageFlipJoinCase::Divergent:
-      // Section 4.3: the two positions are genuinely unrelated, so the user picks. Prompt lands in
-      // the next step.
-      LOG_INF("ERS", "PageFlip join: divergent positions, awaiting the user's choice");
+      // Section 4.3: the devices were read separately, so neither position is more right than the
+      // other and the user picks. Both devices ask, describing their own page; confirming on either
+      // makes that device's position the pair's. The interaction is the choice -- there is no list
+      // of two positions to read, and it works the same whichever device is in your hand.
+      //
+      // Nothing seeks yet. A device that guessed here would throw away the position the other user
+      // might be about to choose.
+      pageflipResumeOwnOffset = ownOffset;
+      // Spine and page are one-based for the reader, as everywhere else the reader names a page.
+      snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), tr(STR_PAGEFLIP_RESUME_ASK), currentSpineIndex + 1,
+               ownPage + 1);
+      pageflipSetSyncState(PageFlipSyncState::Resuming);
       break;
   }
 }
@@ -1540,6 +1571,11 @@ void EpubReaderActivity::pageflipPump() {
       // above and sent from the pump. A greeting that could not be joined with never reaches this
       // switch -- it took the mismatch or undecided-layout path, which owes a decline instead.
       break;
+    case PageFlipAction::JoinResume:
+      LOG_INF("ERS", "PageFlip join: reading from the peer's choice, spine %d offset %u", decision.spineIndex,
+              static_cast<unsigned>(decision.peerVisibleTextOffset));
+      pageflipResumeTo(decision);
+      break;
     case PageFlipAction::Mismatch:
       break;  // returned above, before this device counted the peer as present
     case PageFlipAction::SettingsOffer:
@@ -1584,6 +1620,30 @@ bool EpubReaderActivity::pageflipHandleSyncInput() {
       // Held either way: the prompt is a question this device asked, so a press answers it rather
       // than opening the menu or turning a page underneath it.
       return true;
+
+    case PageFlipSyncState::Resuming:
+      if (confirmed) {
+        // Confirming says "the pair reads from here". This device does not move; the peer seeks to
+        // this position and takes its role offset from it.
+        if (!pageflip || !pageflip->proposeResume(currentSpineIndex, pageflipResumeOwnOffset)) {
+          snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_SYNC_FAILED));
+          pageflipSetSyncState(PageFlipSyncState::Reporting);
+        } else {
+          pageflipSetSyncState(PageFlipSyncState::None);
+        }
+      } else if (dismissed) {
+        // Dismissing leaves both devices where they are. That is a real answer -- the pair goes on
+        // reading two unrelated positions -- and the next join re-asks.
+        pageflipSetSyncState(PageFlipSyncState::None);
+      }
+      // Only the two buttons the prompt is actually asking about are held. Unlike a layout
+      // mismatch, a divergent join is not a broken pair: both devices are reading correctly, just
+      // not together. Holding every button would mean a prompt with no timeout had stopped the
+      // reader dead until it was answered -- and this is the ordinary case of one device resumed
+      // and the other opened fresh, so it would happen constantly. Turning a page instead answers
+      // it by reading on; applyAdvance() takes the prompt down.
+      return confirmed || dismissed || mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+             mappedInput.isPressed(MappedInputManager::Button::Back);
 
     case PageFlipSyncState::Offering:
       return true;  // an exchange is in flight; a page turn now would be applied to a dead layout
@@ -1707,7 +1767,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       // wait that matters -- the layout rebuild after an apply -- already has the indexing popup.
       if (pageflipSyncState == PageFlipSyncState::Asking) {
         GUI.drawPopup(renderer, tr(STR_PAGEFLIP_SYNC_ASK));
-      } else if (pageflipSyncState == PageFlipSyncState::Reporting) {
+      } else if (pageflipSyncState == PageFlipSyncState::Resuming ||
+                 pageflipSyncState == PageFlipSyncState::Reporting) {
+        // Both carry a sentence built for the occasion: the resume prompt names this device's own
+        // page, which is the whole basis on which the user is choosing between the two.
         GUI.drawPopup(renderer, pageflipSyncMessage);
       }
     }

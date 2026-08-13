@@ -320,6 +320,65 @@ TEST(PageFlipPacket, HelloDecodeToleratesTrailingBytes) {
   EXPECT_EQ(received.visibleTextOffset, sampleHello().visibleTextOffset);
 }
 
+// --- the divergent join's answer (docs/pageflip.md section 4.3) ---
+
+PageFlipJoinResume sampleResume() {
+  PageFlipJoinResume resume;
+  resume.compatHash = 0x11223344u;
+  resume.bookId = 0x55667788u;
+  resume.spineIndex = -3;
+  resume.visibleTextOffset = 0x0000FEDCu;
+  resume.role = PageFlipRole::Right;
+  return resume;
+}
+
+TEST(PageFlipPacket, JoinResumeRoundTripsAndPinsItsLayout) {
+  std::vector<uint8_t> wire(PageFlipPacket::JOIN_RESUME_BYTES);
+  size_t length = 0;
+  ASSERT_TRUE(PageFlipPacket::encodeJoinResume(sampleResume(), wire.data(), wire.size(), length));
+  EXPECT_EQ(length, PageFlipPacket::JOIN_RESUME_BYTES);
+
+  const std::vector<uint8_t> expected = {
+      0x50, 0x46,              // magic 'PF', little-endian
+      0x01,                    // protocol version
+      0x06,                    // message: JoinResume
+      0x01,                    // flags: right
+      0x44, 0x33, 0x22, 0x11,  // compatHash
+      0x88, 0x77, 0x66, 0x55,  // bookId
+      0xFD, 0xFF, 0xFF, 0xFF,  // spineIndex -3
+      0xDC, 0xFE, 0x00, 0x00,  // visibleTextOffset
+  };
+  EXPECT_EQ(wire, expected);
+
+  PageFlipJoinResume received;
+  ASSERT_TRUE(PageFlipPacket::decodeJoinResume(wire.data(), wire.size(), received));
+  EXPECT_EQ(received.compatHash, sampleResume().compatHash);
+  EXPECT_EQ(received.bookId, sampleResume().bookId);
+  EXPECT_EQ(received.spineIndex, sampleResume().spineIndex);
+  EXPECT_EQ(received.visibleTextOffset, sampleResume().visibleTextOffset);
+  EXPECT_EQ(received.role, sampleResume().role);
+}
+
+TEST(PageFlipPacket, JoinResumeRejectsTruncationAndForeignTraffic) {
+  std::vector<uint8_t> wire(PageFlipPacket::JOIN_RESUME_BYTES);
+  size_t length = 0;
+  ASSERT_TRUE(PageFlipPacket::encodeJoinResume(sampleResume(), wire.data(), wire.size(), length));
+
+  PageFlipJoinResume received;
+  for (size_t truncated = 0; truncated < wire.size(); ++truncated) {
+    EXPECT_FALSE(PageFlipPacket::decodeJoinResume(wire.data(), truncated, received))
+        << "accepted a " << truncated << "-byte resume";
+  }
+
+  std::vector<uint8_t> otherMessage = wire;
+  otherMessage[3] = static_cast<uint8_t>(PageFlipMessage::SyncApply);
+  EXPECT_FALSE(PageFlipPacket::decodeJoinResume(otherMessage.data(), otherMessage.size(), received));
+
+  std::vector<uint8_t> undersized(PageFlipPacket::JOIN_RESUME_BYTES - 1, 0xAA);
+  EXPECT_FALSE(PageFlipPacket::encodeJoinResume(sampleResume(), undersized.data(), undersized.size(), length));
+  EXPECT_EQ(undersized.front(), 0xAA);
+}
+
 // --- settings force-sync (docs/pageflip.md section 5.1) ---
 
 PageFlipSyncOffer sampleOffer() {

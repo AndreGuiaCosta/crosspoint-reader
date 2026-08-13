@@ -104,6 +104,9 @@ class EpubReaderActivity final : public Activity {
   uint32_t pageflipJoinRound = 0;
   int32_t pageflipJoinPeerSpineIndex = 0;
   uint32_t pageflipJoinPeerOffset = 0;
+  // This device's own anchor, captured when the divergent prompt went up, so confirming proposes
+  // the position the prompt actually describes rather than wherever the reader has drifted to.
+  uint32_t pageflipResumeOwnOffset = 0;
   // A device being read from but not pressed sees no input of its own, so peer traffic has to keep
   // it awake. Only decoded packets from a compatible peer count -- see the receive path.
   static constexpr unsigned long PEER_ACTIVITY_WINDOW_MS = 3000;
@@ -120,6 +123,11 @@ class EpubReaderActivity final : public Activity {
     Offering,   // our settings are out, waiting on the peer's preflight
     Applying,   // the peer's settings are being written and the layout rebuilt here
     Reporting,  // an outcome is on screen: matched, or why it could not be
+    // Section 4.3's divergent join, which is the same gesture over a different subject: both
+    // devices ask, and confirming on one makes THAT device's position the pair's. Sharing the
+    // state machine rather than growing a second one is deliberate -- two prompt machines racing
+    // for Confirm on the same screen is a bug waiting to be written.
+    Resuming,
   };
   PageFlipSyncState pageflipSyncState = PageFlipSyncState::None;
   // Set when the state changes, so render() draws the new state once rather than every frame.
@@ -318,7 +326,13 @@ class EpubReaderActivity final : public Activity {
                                 uint32_t& visibleTextOffset, PageFlipJoinVerdict& verdict);
   // Answers a latched probe and acts on the classification if it completed one.
   void pageflipAnswerJoinProbe();
-  void pageflipApplyJoin(const PageFlipJoinResolution& resolution);
+  // `ownPage` and `ownOffset` are this device's settled position, passed in rather than re-read:
+  // they were taken under the same lock as the verdict, and the divergent prompt has to describe
+  // the position that was classified, not one the reader has moved to since.
+  void pageflipApplyJoin(const PageFlipJoinResolution& resolution, int ownPage, uint32_t ownOffset);
+  // Seeks to the position the user chose on the other device, then owes the role offset -- one step,
+  // because a section boundary may sit between the chosen page and this device's.
+  void pageflipResumeTo(const PageFlipDecision& decision);
   // Lands on a content offset in another spine, the one navigation that survives any difference in
   // pagination. Used for the cases where this device has to move to where the peer is.
   void pageflipSeekToOffset(int32_t spineIndex, uint32_t visibleTextOffset);

@@ -68,6 +68,9 @@ void PageFlipSession::beginJoinRound() {
   joinPeerVerdict = PageFlipJoinVerdict::Unknown;
   joinPeerWantsReply = false;
   joinResolved = false;
+  // A choice made about the old round is not a choice about this one: the positions it named may
+  // not exist in the pagination the pair is about to negotiate over.
+  resumeProposed = false;
 }
 
 bool PageFlipSession::sendHello(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset, bool wantsReply,
@@ -98,6 +101,26 @@ bool PageFlipSession::announceHello(int32_t spineIndex, int32_t pageNumber, uint
   beginJoinRound();
   // Nothing has been heard from the peer this round, so there is nothing to have judged.
   return sendHello(spineIndex, pageNumber, visibleTextOffset, true, true, PageFlipJoinVerdict::Unknown);
+}
+
+bool PageFlipSession::proposeResume(const int32_t spineIndex, const uint32_t visibleTextOffset) {
+  // A position is only meaningful inside a pagination, and the sentinel is not one.
+  if (compatHash == 0) return false;
+
+  PageFlipJoinResume resume;
+  resume.compatHash = compatHash;
+  resume.bookId = bookId;
+  resume.spineIndex = spineIndex;
+  resume.visibleTextOffset = visibleTextOffset;
+  resume.role = role;
+
+  uint8_t wire[PageFlipTransport::MAX_PAYLOAD_BYTES];
+  size_t wireLength = 0;
+  if (!PageFlipPacket::encodeJoinResume(resume, wire, sizeof(wire), wireLength)) return false;
+  if (!transport.broadcast(wire, wireLength)) return false;
+
+  resumeProposed = true;
+  return true;
 }
 
 bool PageFlipSession::declineJoin(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset) {
@@ -362,6 +385,32 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
     decision.settings = &pendingOffer;
     decision.peerRole = apply.role;
     decision.applyRoleOffset = apply.role != role;
+    return true;
+  }
+
+  if (message == PageFlipMessage::JoinResume) {
+    PageFlipJoinResume resume;
+    if (!PageFlipPacket::decodeJoinResume(buffer, length, resume)) return false;
+    if (resume.bookId != bookId) return true;
+    // A choice expressed in a pagination this device is not using cannot be seeked to by page, and
+    // the role offset below is a step through one. The pair will re-negotiate once the layouts
+    // agree again, so dropping this is a delay, not a loss.
+    if (!canCompareLayout(resume.compatHash) || resume.compatHash != compatHash) return true;
+
+    // Both users confirming in the same window. Without a tiebreak each device would seek to the
+    // other and the pair would trade positions rather than settle on one -- the same failure a
+    // conflicting turn has, resolved the same way.
+    if (resumeProposed && winsTiebreakAgainst(senderMac)) return true;
+    resumeProposed = false;
+
+    decision.action = PageFlipAction::JoinResume;
+    decision.spineIndex = resume.spineIndex;
+    decision.peerVisibleTextOffset = resume.visibleTextOffset;
+    decision.peerRole = resume.role;
+    decision.applyRoleOffset = resume.role != role;
+    // The offset is fixed by role and not by who chose: right is always left + 1, so the right
+    // device lands one page after the chosen position and the left device one page before it.
+    decision.forward = role == PageFlipRole::Right;
     return true;
   }
 

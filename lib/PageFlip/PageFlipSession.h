@@ -24,6 +24,7 @@ enum class PageFlipAction : uint8_t {
   SettingsOffer,   // the peer wants to push its render settings: preflight them and answerOffer()
   SettingsAnswer,  // our offer came back judged: commitOffer() on Ok, otherwise tell the user why
   SettingsApply,   // the offer we preflighted was committed: write it and rebuild the layout
+  JoinResume,      // the user picked the peer's position for the pair: seek there, plus role offset
 };
 
 // Where the two devices stand relative to each other, once the join negotiation has run
@@ -150,6 +151,11 @@ class PageFlipSession {
   bool answerJoin(uint32_t round, PageFlipJoinVerdict verdict, int32_t spineIndex, int32_t pageNumber,
                   uint32_t visibleTextOffset, PageFlipJoinResolution& resolution);
 
+  // The user's answer to a divergent join (section 4.3): the pair reads from where this device is.
+  // The confirming device does not move -- the peer seeks here and takes its role offset from it,
+  // which is what makes the gesture "pick a device" rather than "answer a question".
+  bool proposeResume(int32_t spineIndex, uint32_t visibleTextOffset);
+
   // The answer to a greeting from a peer this device cannot pair with (section 5). It carries this
   // device's own hash, which is how the other user gets told about the mismatch too, and it asks
   // for nothing back -- two mismatched devices greeting each other would never stop.
@@ -248,4 +254,8 @@ class PageFlipSession {
   // Latched so the pair is classified once per round. Without it every later greeting in the same
   // round would resolve again, and Identical would step the right device forward once per packet.
   bool joinResolved = false;
+  // A resume this device proposed (section 4.3). Kept only for the tiebreak: two users confirming
+  // in the same window would otherwise each seek to the other, and the pair would swap positions
+  // instead of settling on one.
+  bool resumeProposed = false;
 };

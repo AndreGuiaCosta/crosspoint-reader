@@ -49,6 +49,8 @@ enum class PageFlipMessage : uint8_t {
   SyncOffer = 3,
   SyncAnswer = 4,
   SyncApply = 5,
+  // The user's answer to a divergent join (section 4.3).
+  JoinResume = 6,
 };
 
 // A page turn that has already been applied on the sender.
@@ -125,6 +127,21 @@ struct PageFlipSyncApply {
   PageFlipRole role = PageFlipRole::Left;
 };
 
+// "The pair reads from here" -- the user's choice, when the join found two unrelated positions
+// (section 4.3). Sent by the device the user confirmed on, which then does not move: the other one
+// seeks to this position and takes its role offset from it.
+//
+// The position is a content offset for the same reason the join is: it is the only anchor that
+// means the same thing on both devices. The compat hash rides along so a choice made under a
+// layout the pair has since left is ignored rather than acted on.
+struct PageFlipJoinResume {
+  uint32_t compatHash = 0;
+  uint32_t bookId = 0;
+  int32_t spineIndex = 0;
+  uint32_t visibleTextOffset = 0;
+  PageFlipRole role = PageFlipRole::Left;
+};
+
 namespace PageFlipPacket {
 
 inline constexpr uint16_t MAGIC = 0x4650;  // 'PF', little-endian on the wire
@@ -143,6 +160,8 @@ inline constexpr size_t SYNC_OFFER_MIN_BYTES = 32;
 inline constexpr size_t SYNC_OFFER_MAX_BYTES = SYNC_OFFER_MIN_BYTES + PageFlipRenderSettings::FONT_NAME_MAX_LENGTH;
 inline constexpr size_t SYNC_ANSWER_BYTES = 18;
 inline constexpr size_t SYNC_APPLY_BYTES = 13;
+// header(5) + compatHash(4) + bookId(4) + spineIndex(4) + visibleTextOffset(4)
+inline constexpr size_t JOIN_RESUME_BYTES = 21;
 
 // Writes a Turn packet. Returns false without touching `output` if `capacity` is too small.
 bool encodeTurn(const PageFlipTurn& turn, uint8_t* output, size_t capacity, size_t& outputLength);
@@ -172,6 +191,10 @@ bool decodeSyncAnswer(const uint8_t* data, size_t length, PageFlipSyncAnswer& an
 
 bool encodeSyncApply(const PageFlipSyncApply& apply, uint8_t* output, size_t capacity, size_t& outputLength);
 bool decodeSyncApply(const uint8_t* data, size_t length, PageFlipSyncApply& apply);
+
+// The divergent join's answer (section 4.3). Same rules again.
+bool encodeJoinResume(const PageFlipJoinResume& resume, uint8_t* output, size_t capacity, size_t& outputLength);
+bool decodeJoinResume(const uint8_t* data, size_t length, PageFlipJoinResume& resume);
 
 // Peeks the message type without validating the rest, so a receive loop can dispatch before
 // decoding. Returns false when the buffer is not a PageFlip packet at all.

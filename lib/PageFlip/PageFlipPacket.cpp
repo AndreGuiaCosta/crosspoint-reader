@@ -42,6 +42,10 @@ constexpr size_t OFF_OFFER_FONT_NAME = 32;
 constexpr size_t OFF_ANSWER_RESULT_HASH = 13;
 constexpr size_t OFF_ANSWER_RESULT = 17;
 
+// The divergent join's answer (section 4.3), on the same header shape.
+constexpr size_t OFF_RESUME_SPINE_INDEX = 13;
+constexpr size_t OFF_RESUME_VISIBLE_OFFSET = 17;
+
 // Smallest prefix that identifies a packet as ours: magic + version + message.
 constexpr size_t HEADER_BYTES = 4;
 
@@ -345,6 +349,30 @@ bool decodeSyncApply(const uint8_t* data, size_t length, PageFlipSyncApply& appl
   return true;
 }
 
+bool encodeJoinResume(const PageFlipJoinResume& resume, uint8_t* output, size_t capacity, size_t& outputLength) {
+  if (output == nullptr || capacity < JOIN_RESUME_BYTES) return false;
+
+  writeSyncHeader(output, PageFlipMessage::JoinResume, resume.role, resume.compatHash, resume.bookId);
+  writeI32(output + OFF_RESUME_SPINE_INDEX, resume.spineIndex);
+  writeU32(output + OFF_RESUME_VISIBLE_OFFSET, resume.visibleTextOffset);
+
+  outputLength = JOIN_RESUME_BYTES;
+  return true;
+}
+
+bool decodeJoinResume(const uint8_t* data, size_t length, PageFlipJoinResume& resume) {
+  if (!hasPageFlipHeader(data, length)) return false;
+  if (data[OFF_MESSAGE] != static_cast<uint8_t>(PageFlipMessage::JoinResume)) return false;
+  if (length < JOIN_RESUME_BYTES) return false;
+
+  resume.role = (data[OFF_FLAGS] & FLAG_ROLE_RIGHT) ? PageFlipRole::Right : PageFlipRole::Left;
+  resume.compatHash = readU32(data + OFF_SYNC_COMPAT_HASH);
+  resume.bookId = readU32(data + OFF_SYNC_BOOK_ID);
+  resume.spineIndex = readI32(data + OFF_RESUME_SPINE_INDEX);
+  resume.visibleTextOffset = readU32(data + OFF_RESUME_VISIBLE_OFFSET);
+  return true;
+}
+
 bool peekMessage(const uint8_t* data, size_t length, PageFlipMessage& message) {
   if (!hasPageFlipHeader(data, length)) return false;
   switch (static_cast<PageFlipMessage>(data[OFF_MESSAGE])) {
@@ -362,6 +390,9 @@ bool peekMessage(const uint8_t* data, size_t length, PageFlipMessage& message) {
       return true;
     case PageFlipMessage::SyncApply:
       message = PageFlipMessage::SyncApply;
+      return true;
+    case PageFlipMessage::JoinResume:
+      message = PageFlipMessage::JoinResume;
       return true;
   }
   return false;  // a message type this build does not know

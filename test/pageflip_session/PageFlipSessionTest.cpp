@@ -638,6 +638,81 @@ TEST_F(PageFlipSessionTest, AnIncompatibleOrUndecidedPeerIsNeverProbed) {
   }
 }
 
+// --- the divergent join's answer (docs/pageflip.md section 4.3) ---
+
+// Confirming picks a device, not an option: the chooser stays where it is and the other seeks to
+// it. The role offset is fixed by role, so the left device lands one page BEFORE a right device's
+// choice however the pair got there.
+TEST_F(PageFlipSessionTest, ConfirmingAResumeMovesTheOtherDevice) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+
+  ASSERT_TRUE(pair.right.proposeResume(4, 1200));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.left, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::JoinResume);
+  EXPECT_EQ(decision.spineIndex, 4);
+  EXPECT_EQ(decision.peerVisibleTextOffset, 1200u);
+  EXPECT_EQ(decision.peerRole, PageFlipRole::Right);
+  EXPECT_TRUE(decision.applyRoleOffset);
+  EXPECT_FALSE(decision.forward) << "left sits one page before the right device's choice";
+}
+
+TEST_F(PageFlipSessionTest, TheRightDeviceLandsAfterALeftChoice) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+
+  ASSERT_TRUE(pair.left.proposeResume(4, 1200));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::JoinResume);
+  EXPECT_TRUE(decision.applyRoleOffset);
+  EXPECT_TRUE(decision.forward);
+}
+
+// Both users confirming in the same window. Without the tiebreak each device seeks to the other and
+// the pair trades positions instead of settling on one.
+TEST_F(PageFlipSessionTest, SimultaneousResumeChoicesResolveByLowerMac) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+
+  ASSERT_TRUE(pair.left.proposeResume(1, 100));
+  ASSERT_TRUE(pair.right.proposeResume(9, 900));
+
+  // Slot 0's MAC is the lower one, so the left device's choice stands and it ignores the right's.
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.left, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::Ignore);
+
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::JoinResume);
+  EXPECT_EQ(decision.spineIndex, 1) << "the loser adopts the winner's choice";
+}
+
+// A choice made under a layout the pair has since left names a page in a pagination this device is
+// not using, and the role offset below is a step through one.
+TEST_F(PageFlipSessionTest, AResumeFromAnotherLayoutIsIgnored) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  pair.left.setBook(BOOK, COMPAT ^ 0xFFFFFFFFu);
+
+  ASSERT_TRUE(pair.left.proposeResume(4, 1200));
+
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.right, decision));
+  EXPECT_EQ(decision.action, PageFlipAction::Ignore);
+}
+
+TEST_F(PageFlipSessionTest, AResumeBeforeTheFirstRenderIsRefused) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  pair.left.setBook(BOOK, 0);
+
+  EXPECT_FALSE(pair.left.proposeResume(4, 1200)) << "the sentinel is not a pagination to name a page in";
+}
+
 // A turn arriving in that same window must not be applied -- stepping a position whose layout is
 // unknown is the desync the hash exists to prevent -- but it must not be reported either.
 TEST_F(PageFlipSessionTest, ATurnFromADeviceThatHasNotRenderedIsIgnoredNotReported) {
