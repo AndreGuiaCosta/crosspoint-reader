@@ -1417,8 +1417,9 @@ bool EpubReaderActivity::pageflipHandleSyncInput() {
     case PageFlipSyncState::Asking:
       if (confirmed) {
         // The interaction is the choice: confirming here says "these are the pair's settings".
-        const bool sent = pageflip && buildViewportWidth > 0 &&
-                          pageflip->offerSettings(PageFlipSettingsSync::collect(buildViewportWidth, buildViewportHeight));
+        const bool sent =
+            pageflip && buildViewportWidth > 0 &&
+            pageflip->offerSettings(PageFlipSettingsSync::collect(buildViewportWidth, buildViewportHeight));
         if (sent) {
           pageflipSetSyncState(PageFlipSyncState::Offering);
         } else {

@@ -54,7 +54,8 @@ inline ReaderLayoutBox readerLayoutBox(const GfxRenderer& renderer, const uint8_
   const uint8_t statusBarHeight = UITheme::getInstance().getStatusBarHeight();
   // Reserves space for the automatic page turn indicator when there is no status bar, or a progress
   // bar only.
-  if (autoPageTurnActive && (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
+  if (autoPageTurnActive &&
+      (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
     box.marginBottom +=
         std::max(screenMargin,
                  static_cast<uint8_t>(statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin));
