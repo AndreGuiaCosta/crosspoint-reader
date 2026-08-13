@@ -292,6 +292,12 @@ class EpubReaderActivity final : public Activity {
   // and resets it under the lock, so reading it unguarded is a use-after-free. Callers retry on the
   // next pump rather than block the main task behind a full page render.
   bool pageflipSettledPage(int& page);
+  // The same, plus the content offset the join negotiation compares (section 4.2). Separate because
+  // it can fail where the page alone cannot: a section that is not loaded, or a page outside it,
+  // has no anchor to report, and a greeting without one announces a position the peer cannot test
+  // itself against. Turns keep using the page-only form -- they run between devices already proven
+  // to share a layout, where a page number means the same thing on both.
+  bool pageflipSettledPosition(int& page, uint32_t& visibleTextOffset);
   // Drops back to solo reading and arms the notice. A peer that cannot apply our turns must not
   // gate the two-step advance.
   void pageflipReportMismatch(const PageFlipDecision& decision);

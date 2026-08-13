@@ -26,6 +26,39 @@ enum class PageFlipAction : uint8_t {
   SettingsApply,   // the offer we preflighted was committed: write it and rebuild the layout
 };
 
+// Where the two devices stand relative to each other, once the join negotiation has run
+// (docs/pageflip.md section 4.2).
+enum class PageFlipJoinCase : uint8_t {
+  // Both devices are on the same page. Section 4.2's table has no row for this, and it is the most
+  // common join there is: a book opened for the first time on both, or two devices resumed from the
+  // same synced progress. It is also the only case that has to CREATE the spread rather than
+  // recognise one -- the right device steps forward, and the pair is a spread from then on.
+  //
+  // Note it cannot be read off the two verdicts: both devices answer NotAdjacent from the same
+  // offset, which is indistinguishable from divergent. It is a direct equality test instead.
+  Identical,
+  // Left is at P and right at P+1: the ordinary reopen. Resume silently.
+  Aligned,
+  // Right is at P and left at P+1. The user physically swapped the devices; re-normalise to role.
+  Swapped,
+  // Two unrelated positions -- the devices were read separately. Prompt on both (section 4.3).
+  Divergent,
+};
+
+// The outcome of answerJoin(), which is where every classification happens. Both devices reach it:
+// the one that hears the peer's verdict last and the one that computes its own last both end up
+// here, which is what keeps the join from working in one direction and being silently dead in the
+// other -- the same shape of half-broken pair the turnSeq adoption rule exists to prevent.
+struct PageFlipJoinResolution {
+  bool resolved = false;
+  PageFlipJoinCase joinCase = PageFlipJoinCase::Divergent;
+  // Where the peer says it is. Every case except Aligned moves this device relative to it, and the
+  // anchor is the offset -- a page number would be counted in the peer's layout, not this one's.
+  int32_t peerSpineIndex = 0;
+  uint32_t peerVisibleTextOffset = 0;
+  PageFlipRole peerRole = PageFlipRole::Left;
+};
+
 struct PageFlipDecision {
   PageFlipAction action = PageFlipAction::Ignore;
 
@@ -44,6 +77,18 @@ struct PageFlipDecision {
   // PeerHello only: the greeting expects an answer. An answer does not, which is what keeps two
   // devices from greeting each other forever.
   bool peerWantsReply = false;
+
+  // PeerHello only: the join negotiation (section 4.2) has a question for the reader. Set only once
+  // the layouts are known to agree, because that ordering is mandatory -- classifying first would
+  // compare positions taken from two different layouts, which means nothing.
+  bool joinProbe = false;
+  // Where the peer says it is. `spineIndex` above carries its spine; this is the anchor to compare
+  // against, and the only part of a peer's position that survives a difference in layout.
+  uint32_t peerVisibleTextOffset = 0;
+  // Which negotiation this question belongs to. Handed back to answerJoin() so an answer computed
+  // against a position the peer has since moved off is rejected rather than classifying the pair
+  // from a stale offset -- the same staleness rule the force-sync answer takes on targetHash.
+  uint32_t joinRound = 0;
 
   // False while either device is still advertising the "not computed yet" compat sentinel, which
   // it does until its own first render has fixed the viewport. Comparing against that decides
@@ -81,11 +126,34 @@ class PageFlipSession {
   // error: reading must never block on the pair.
   bool announceLocalTurn(bool forward, int32_t spineIndex, int32_t pageNumber, bool atBookEnd);
 
-  // Says "I am here, reading this, my counter is at N". Sent when the reader opens the book and
-  // again as the answer to a peer's greeting. Presence has to be established before turns may
-  // advance by two: a link that came up is not a peer that is there, and a lone device advancing
-  // by two would turn two pages on every press.
-  bool announceHello(int32_t spineIndex, int32_t pageNumber, bool wantsReply);
+  // Says "I am here, reading this, my counter is at N, and here is where in the text I am". Sent
+  // when the reader opens the book and again whenever this device's layout changes. Presence has to
+  // be established before turns may advance by two: a link that came up is not a peer that is
+  // there, and a lone device advancing by two would turn two pages on every press.
+  //
+  // Always a greeting, never an answer: it opens a fresh join round. That is what makes section
+  // 4.4's "rotation re-triggers the negotiation" the same code path as a first join instead of a
+  // recovery mode of its own. The reply to a peer's greeting goes out from answerJoin() instead,
+  // because a reply has a verdict to carry and this does not.
+  bool announceHello(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset);
+
+  // The reader's half of the join negotiation (section 4.2), in answer to a decision whose
+  // `joinProbe` was set: the verdict this device computed against the offset the probe reported,
+  // plus where this device itself is. Both have to arrive together -- the classification needs this
+  // device's own position for the Identical test, and that position can only be read when no render
+  // is in flight, which is the same moment the verdict can be computed.
+  //
+  // Returns false without touching `resolution` when `round` is not the current one: the peer moved
+  // after the probe went out, so an answer about the old offset would classify the pair from a
+  // position neither device is at. `resolution.resolved` is set at most once per round, so the
+  // caller may act on it directly -- a second Identical would step the right device forward twice.
+  bool answerJoin(uint32_t round, PageFlipJoinVerdict verdict, int32_t spineIndex, int32_t pageNumber,
+                  uint32_t visibleTextOffset, PageFlipJoinResolution& resolution);
+
+  // The answer to a greeting from a peer this device cannot pair with (section 5). It carries this
+  // device's own hash, which is how the other user gets told about the mismatch too, and it asks
+  // for nothing back -- two mismatched devices greeting each other would never stop.
+  bool declineJoin(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset);
 
   // Pumped once per frame. Returns true when a packet was received and `decision` was filled; the
   // decision may still be Ignore, which is not the same as "nothing arrived" -- only a decoded
@@ -126,6 +194,16 @@ class PageFlipSession {
   // Lower MAC wins a conflict (section 3). Returns true when this device is the winner.
   bool winsTiebreakAgainst(const uint8_t peerMac[PageFlipTransport::MAC_BYTES]) const;
 
+  // Forgets everything heard about the peer's position and re-arms the classification. Called when
+  // either device greets, which is the definition of a join starting: a greeting is what a device
+  // sends on opening the book and on changing its layout, and both must re-negotiate.
+  void beginJoinRound();
+
+  // The one place a hello goes on the wire, so the greeting, the reply and the decline cannot drift
+  // apart in what they claim about this device.
+  bool sendHello(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset, bool wantsReply, bool startsJoin,
+                 PageFlipJoinVerdict verdict);
+
   // Whether the two hashes can be compared at all. Zero is the "not computed yet" sentinel -- the
   // viewport is a render() output, so a device advertises zero from the moment its link comes up
   // until its first page has been laid out, which on a cold cache is seconds. Treating that as a
@@ -154,4 +232,20 @@ class PageFlipSession {
   bool offerPending = false;
   uint32_t pendingOfferHash = 0;
   PageFlipRenderSettings pendingOffer;
+
+  // The join negotiation (section 4.2). The round counter only has to outlive the gap between a
+  // probe going out and its answer coming back, so it is never compared for order -- just equality.
+  uint32_t joinRound = 0;
+  bool joinPeerKnown = false;
+  int32_t joinPeerSpineIndex = 0;
+  uint32_t joinPeerVisibleTextOffset = 0;
+  PageFlipRole joinPeerRole = PageFlipRole::Left;
+  PageFlipJoinVerdict joinPeerVerdict = PageFlipJoinVerdict::Unknown;
+  // A greeting owed a reply. Held here rather than by the caller because the reply carries the
+  // verdict, and the verdict is not known until the caller answers -- so the two have to be the
+  // same call.
+  bool joinPeerWantsReply = false;
+  // Latched so the pair is classified once per round. Without it every later greeting in the same
+  // round would resolve again, and Identical would step the right device forward once per packet.
+  bool joinResolved = false;
 };

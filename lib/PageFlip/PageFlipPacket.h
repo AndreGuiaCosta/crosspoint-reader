@@ -87,6 +87,14 @@ struct PageFlipHello {
   bool wantsReply = true;
   // What this device made of the last position it heard from the peer.
   PageFlipJoinVerdict joinVerdict = PageFlipJoinVerdict::Unknown;
+  // "Forget where I was; this is a fresh join." Set by a device opening a book or changing its
+  // layout, and by nothing else -- a reply asking for one more round is still the same negotiation.
+  //
+  // Deliberately its own bit rather than inferred from `wantsReply`. A reply that asks for another
+  // round would otherwise be indistinguishable from a greeting, and restarting the round on one
+  // would classify the pair a second time: Identical, resolved twice, steps the right device
+  // forward twice and lands the spread two pages apart.
+  bool startsJoin = true;
 };
 
 // A push of one device's render settings onto the other (section 5.1). Sent by the device the user

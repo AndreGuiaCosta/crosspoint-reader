@@ -293,28 +293,31 @@ TEST_F(PageFlipSessionTest, GreetingAnnouncesPresenceAndAdoptsTheCounter) {
   ASSERT_TRUE(pair.start());
 
   pair.left.adoptTurnSeq(847);
-  ASSERT_TRUE(pair.left.announceHello(3, 2, true));
+  ASSERT_TRUE(pair.left.announceHello(3, 2, 500));
 
   PageFlipDecision decision;
   ASSERT_TRUE(pollWithRetry(pair.right, decision));
   EXPECT_EQ(decision.action, PageFlipAction::PeerHello);
   EXPECT_TRUE(decision.peerWantsReply);
   EXPECT_EQ(decision.spineIndex, 3);
+  EXPECT_EQ(decision.peerVisibleTextOffset, 500u);
   EXPECT_TRUE(decision.applyRoleOffset);
   EXPECT_EQ(pair.right.getTurnSeq(), 847u) << "the greeting carries the pair's counter";
 }
 
-// The answer must not itself be answered, or two devices greet each other forever.
-TEST_F(PageFlipSessionTest, AnswerToAGreetingAsksForNothingBack) {
+// The reply to a greeting must not itself be answered, or two devices greet each other forever.
+// The decline is the case with no join behind it to stop the exchange on its own.
+TEST_F(PageFlipSessionTest, DeclineAsksForNothingBack) {
   Pair pair;
   ASSERT_TRUE(pair.start());
 
-  ASSERT_TRUE(pair.right.announceHello(1, 1, false));
+  ASSERT_TRUE(pair.right.declineJoin(1, 1, 90));
 
   PageFlipDecision decision;
   ASSERT_TRUE(pollWithRetry(pair.left, decision));
   EXPECT_EQ(decision.action, PageFlipAction::PeerHello);
   EXPECT_FALSE(decision.peerWantsReply);
+  EXPECT_EQ(decision.peerVisibleTextOffset, 90u);
 }
 
 TEST_F(PageFlipSessionTest, GreetingForAnotherBookIsNotOurPeer) {
@@ -322,7 +325,7 @@ TEST_F(PageFlipSessionTest, GreetingForAnotherBookIsNotOurPeer) {
   ASSERT_TRUE(pair.start());
   pair.left.setBook(0x1234u, COMPAT);
 
-  ASSERT_TRUE(pair.left.announceHello(0, 0, true));
+  ASSERT_TRUE(pair.left.announceHello(0, 0, 0));
 
   PageFlipDecision decision;
   ASSERT_TRUE(pollWithRetry(pair.right, decision));
@@ -337,7 +340,7 @@ TEST_F(PageFlipSessionTest, GreetingWithADifferentLayoutIsAMismatch) {
   ASSERT_TRUE(pair.start());
   pair.left.setBook(BOOK, COMPAT ^ 0xFFFFFFFFu);  // same book, a layout this device cannot match
 
-  ASSERT_TRUE(pair.left.announceHello(3, 2, true));
+  ASSERT_TRUE(pair.left.announceHello(3, 2, 500));
 
   PageFlipDecision decision;
   ASSERT_TRUE(pollWithRetry(pair.right, decision));
@@ -357,7 +360,7 @@ TEST_F(PageFlipSessionTest, MismatchedGreetingStillAdoptsTheCounter) {
   pair.left.setBook(BOOK, COMPAT ^ 0xFFFFFFFFu);
   pair.left.adoptTurnSeq(847);
 
-  ASSERT_TRUE(pair.left.announceHello(0, 0, true));
+  ASSERT_TRUE(pair.left.announceHello(0, 0, 0));
 
   PageFlipDecision decision;
   ASSERT_TRUE(pollWithRetry(pair.right, decision));
@@ -376,7 +379,7 @@ TEST_F(PageFlipSessionTest, AGreetingFromADeviceThatHasNotRenderedIsNotAMismatch
   ASSERT_TRUE(pair.start());
   pair.left.setBook(BOOK, 0);  // link up, first render still in flight
 
-  ASSERT_TRUE(pair.left.announceHello(0, 0, true));
+  ASSERT_TRUE(pair.left.announceHello(0, 0, 0));
 
   PageFlipDecision decision;
   ASSERT_TRUE(pollWithRetry(pair.right, decision));
@@ -391,12 +394,248 @@ TEST_F(PageFlipSessionTest, AGreetingReceivedBeforeOurOwnFirstRenderIsNotAMismat
   ASSERT_TRUE(pair.start());
   pair.right.setBook(BOOK, 0);
 
-  ASSERT_TRUE(pair.left.announceHello(0, 0, true));
+  ASSERT_TRUE(pair.left.announceHello(0, 0, 0));
 
   PageFlipDecision decision;
   ASSERT_TRUE(pollWithRetry(pair.right, decision));
   EXPECT_EQ(decision.action, PageFlipAction::PeerHello);
   EXPECT_FALSE(decision.layoutDecided);
+}
+
+// --- the join negotiation (docs/pageflip.md section 4.2) ---
+
+// One device driven the way the reader drives it: poll, and answer every probe with the verdict
+// this device's own pagination implies. The verdict itself is an input here -- deriving it from a
+// loaded Section is the reader's job, and this suite is about what the pair concludes from the two
+// answers, not how either one was reached.
+struct JoinDevice {
+  PageFlipSession& session;
+  int32_t spineIndex = 0;
+  uint32_t offset = 0;
+  // Where this device's next page starts, or nothing when it cannot tell -- a section still
+  // building has no answer, and the honest reply is Unknown.
+  bool nextKnown = true;
+  uint32_t nextOffset = 0;
+
+  PageFlipJoinResolution resolution;
+  int resolutionCount = 0;
+  int packetsSeen = 0;
+
+  bool pump() {
+    PageFlipDecision decision;
+    if (!session.poll(decision)) return false;
+    ++packetsSeen;
+    if (!decision.joinProbe) return true;
+
+    PageFlipJoinVerdict verdict = PageFlipJoinVerdict::Unknown;
+    if (nextKnown) {
+      verdict = (decision.spineIndex == spineIndex && decision.peerVisibleTextOffset == nextOffset)
+                    ? PageFlipJoinVerdict::Adjacent
+                    : PageFlipJoinVerdict::NotAdjacent;
+    }
+    PageFlipJoinResolution answer;
+    if (session.answerJoin(decision.joinRound, verdict, spineIndex, 0, offset, answer) && answer.resolved) {
+      resolution = answer;
+      ++resolutionCount;
+    }
+    return true;
+  }
+};
+
+// Runs the exchange to quiescence. The bound is part of what is being tested: an exchange that does
+// not terminate is two devices trading greetings at packet rate, which on real hardware is a radio
+// that never sleeps.
+void settleJoin(JoinDevice& a, JoinDevice& b, const int maxRounds = 20) {
+  for (int round = 0; round < maxRounds; ++round) {
+    bool progressed = false;
+    for (int attempt = 0; attempt < 5; ++attempt) {
+      if (a.pump()) progressed = true;
+      if (b.pump()) progressed = true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!progressed) return;
+  }
+  ADD_FAILURE() << "the join never went quiet";
+}
+
+// The bootstrap case, and the one section 4.2's table has no row for: two devices on the same page.
+// It is what a book opened for the first time on both looks like, and it is the only join that has
+// to CREATE the one-page spread rather than recognise one.
+TEST_F(PageFlipSessionTest, IdenticalPositionsAreTheCaseThatMakesTheSpread) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  JoinDevice left{pair.left, 1, 100, true, 250};
+  JoinDevice right{pair.right, 1, 100, true, 250};
+
+  ASSERT_TRUE(pair.left.announceHello(1, 0, 100));
+  settleJoin(left, right);
+
+  ASSERT_EQ(left.resolutionCount, 1);
+  ASSERT_EQ(right.resolutionCount, 1);
+  EXPECT_EQ(left.resolution.joinCase, PageFlipJoinCase::Identical);
+  EXPECT_EQ(right.resolution.joinCase, PageFlipJoinCase::Identical);
+  // Both devices answer NotAdjacent from the same page -- their own next page is somewhere neither
+  // of them is. Read off the verdicts alone this is indistinguishable from divergent, which is why
+  // the case is a direct equality test instead.
+  EXPECT_EQ(right.resolution.peerVisibleTextOffset, 100u);
+}
+
+// The ordinary reopen: left at P, right at P+1.
+TEST_F(PageFlipSessionTest, AnAlreadySpreadPairIsAligned) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  JoinDevice left{pair.left, 1, 100, true, 250};
+  JoinDevice right{pair.right, 1, 250, true, 400};
+
+  ASSERT_TRUE(pair.left.announceHello(1, 0, 100));
+  settleJoin(left, right);
+
+  ASSERT_EQ(left.resolutionCount, 1);
+  ASSERT_EQ(right.resolutionCount, 1);
+  EXPECT_EQ(left.resolution.joinCase, PageFlipJoinCase::Aligned);
+  EXPECT_EQ(right.resolution.joinCase, PageFlipJoinCase::Aligned)
+      << "the device that only heard the verdict must reach the same conclusion as the one that computed it";
+}
+
+// The same two positions with the devices the other way round. Only the roles differ, and that is
+// the whole difference between "resume" and "the user swapped them".
+TEST_F(PageFlipSessionTest, TheSamePositionsWithSwappedRolesAreSwapped) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  JoinDevice left{pair.left, 1, 250, true, 400};
+  JoinDevice right{pair.right, 1, 100, true, 250};
+
+  ASSERT_TRUE(pair.left.announceHello(1, 0, 250));
+  settleJoin(left, right);
+
+  ASSERT_EQ(left.resolutionCount, 1);
+  ASSERT_EQ(right.resolutionCount, 1);
+  EXPECT_EQ(left.resolution.joinCase, PageFlipJoinCase::Swapped);
+  EXPECT_EQ(right.resolution.joinCase, PageFlipJoinCase::Swapped);
+}
+
+TEST_F(PageFlipSessionTest, PositionsNeitherDeviceRecognisesAreDivergent) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  JoinDevice left{pair.left, 1, 100, true, 250};
+  JoinDevice right{pair.right, 7, 9000, true, 9100};
+
+  ASSERT_TRUE(pair.left.announceHello(1, 0, 100));
+  settleJoin(left, right);
+
+  ASSERT_EQ(left.resolutionCount, 1);
+  ASSERT_EQ(right.resolutionCount, 1);
+  EXPECT_EQ(left.resolution.joinCase, PageFlipJoinCase::Divergent);
+  EXPECT_EQ(right.resolution.joinCase, PageFlipJoinCase::Divergent);
+  // The prompt of section 4.3 describes the peer's position, so it has to survive the trip.
+  EXPECT_EQ(left.resolution.peerSpineIndex, 7);
+  EXPECT_EQ(left.resolution.peerVisibleTextOffset, 9000u);
+}
+
+// Unknown is "ask again", never "no". A section still building cannot say whether it is on its last
+// page -- pageCount is a watermark until it finalizes -- and treating that as a no would put the
+// resume prompt of section 4.3 in front of a user whose pair is perfectly fine.
+TEST_F(PageFlipSessionTest, ADeviceThatCannotTestYetIsNotCalledDivergent) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  JoinDevice left{pair.left, 1, 100, true, 250};
+  JoinDevice right{pair.right, 1, 700, false, 0};  // section still building: no answer to give
+
+  ASSERT_TRUE(pair.left.announceHello(1, 0, 100));
+  settleJoin(left, right);
+
+  EXPECT_EQ(left.resolutionCount, 0);
+  EXPECT_EQ(right.resolutionCount, 0);
+  // And it must go quiet rather than retry on the wire. The retry that resolves this is the
+  // building device's own re-greeting once its section settles, not a packet-rate ping-pong that
+  // would keep both radios awake for as long as the build runs.
+  EXPECT_LE(left.packetsSeen + right.packetsSeen, 6);
+}
+
+// The exchange terminates on its own even when both devices greet at once, which is the normal case
+// for two readers opened within a second of each other.
+TEST_F(PageFlipSessionTest, SimultaneousGreetingsStillConverge) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+  JoinDevice left{pair.left, 1, 100, true, 250};
+  JoinDevice right{pair.right, 1, 250, true, 400};
+
+  ASSERT_TRUE(pair.left.announceHello(1, 0, 100));
+  ASSERT_TRUE(pair.right.announceHello(1, 0, 250));
+  settleJoin(left, right);
+
+  EXPECT_EQ(left.resolution.joinCase, PageFlipJoinCase::Aligned);
+  EXPECT_EQ(right.resolution.joinCase, PageFlipJoinCase::Aligned);
+  EXPECT_EQ(left.resolutionCount, 1) << "classified once, however many packets the exchange took";
+  EXPECT_EQ(right.resolutionCount, 1);
+}
+
+// An answer computed against a position the peer has since left would classify the pair from a page
+// neither device is on. The round is the same staleness guard the force-sync answer takes on
+// targetHash.
+TEST_F(PageFlipSessionTest, AnAnswerForAnOldRoundIsRejected) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+
+  ASSERT_TRUE(pair.right.announceHello(1, 0, 250));
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.left, decision));
+  ASSERT_TRUE(decision.joinProbe);
+  const uint32_t staleRound = decision.joinRound;
+
+  // The peer moved and greeted again; the answer below is about where it used to be.
+  ASSERT_TRUE(pair.right.announceHello(1, 0, 900));
+  ASSERT_TRUE(pollWithRetry(pair.left, decision));
+
+  PageFlipJoinResolution resolution;
+  EXPECT_FALSE(pair.left.answerJoin(staleRound, PageFlipJoinVerdict::Adjacent, 1, 0, 100, resolution));
+  EXPECT_FALSE(resolution.resolved);
+}
+
+// Section 4.4: rotation changes the viewport, so it changes the hash, so everything concluded about
+// the old pagination is void. Re-negotiating is the recovery -- there is no separate mode for it.
+TEST_F(PageFlipSessionTest, ChangingOurLayoutRestartsTheNegotiation) {
+  Pair pair;
+  ASSERT_TRUE(pair.start());
+
+  ASSERT_TRUE(pair.right.announceHello(1, 0, 250));
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(pair.left, decision));
+  ASSERT_TRUE(decision.joinProbe);
+  const uint32_t roundBefore = decision.joinRound;
+
+  pair.left.setBook(BOOK, COMPAT ^ 0x5A5A5A5Au);
+
+  PageFlipJoinResolution resolution;
+  EXPECT_FALSE(pair.left.answerJoin(roundBefore, PageFlipJoinVerdict::Adjacent, 1, 0, 100, resolution))
+      << "a verdict about the old pagination must not classify the new one";
+}
+
+// The ordering of section 4.2 is mandatory: comparing positions taken from two different paginations
+// is meaningless, so the probe may not be raised until the layouts are known to agree.
+TEST_F(PageFlipSessionTest, AnIncompatibleOrUndecidedPeerIsNeverProbed) {
+  {
+    Pair pair;
+    ASSERT_TRUE(pair.start());
+    pair.left.setBook(BOOK, COMPAT ^ 0xFFFFFFFFu);
+    ASSERT_TRUE(pair.left.announceHello(1, 0, 100));
+
+    PageFlipDecision decision;
+    ASSERT_TRUE(pollWithRetry(pair.right, decision));
+    ASSERT_EQ(decision.action, PageFlipAction::Mismatch);
+    EXPECT_FALSE(decision.joinProbe);
+  }
+  {
+    Pair pair;
+    ASSERT_TRUE(pair.start());
+    pair.left.setBook(BOOK, 0);  // link up, first render still in flight
+    ASSERT_TRUE(pair.left.announceHello(1, 0, 100));
+
+    PageFlipDecision decision;
+    ASSERT_TRUE(pollWithRetry(pair.right, decision));
+    ASSERT_EQ(decision.action, PageFlipAction::PeerHello);
+    EXPECT_FALSE(decision.joinProbe) << "the sentinel is not a layout, so there is nothing to have agreed on";
+  }
 }
 
 // A turn arriving in that same window must not be applied -- stepping a position whose layout is

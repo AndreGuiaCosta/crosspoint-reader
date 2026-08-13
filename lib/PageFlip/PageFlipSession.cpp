@@ -8,7 +8,14 @@ void PageFlipSession::setBook(uint32_t newBookId, uint32_t newCompatHash) {
   // and the answer are both about something that no longer exists, and every later packet would be
   // discarded as stale anyway. Dropping it here is what keeps that from reading as a peer that
   // simply never replied.
-  if (newBookId != bookId || newCompatHash != compatHash) cancelSync();
+  if (newBookId != bookId || newCompatHash != compatHash) {
+    cancelSync();
+    // And the join goes with it. A classification is a statement about two positions inside one
+    // shared pagination; the moment this device's own layout moves, its half of that statement
+    // counts pages that no longer exist. Section 4.4's rotation case is exactly this path -- there
+    // is no separate recovery mode because re-negotiating IS the recovery.
+    beginJoinRound();
+  }
   bookId = newBookId;
   compatHash = newCompatHash;
   // turnSeq deliberately survives a book change. It is a session counter shared by the pair, not a
@@ -53,20 +60,112 @@ bool PageFlipSession::announceLocalTurn(bool forward, int32_t spineIndex, int32_
   return transport.broadcast(wire, wireLength);
 }
 
-bool PageFlipSession::announceHello(int32_t spineIndex, int32_t pageNumber, bool wantsReply) {
+void PageFlipSession::beginJoinRound() {
+  ++joinRound;
+  joinPeerKnown = false;
+  joinPeerSpineIndex = 0;
+  joinPeerVisibleTextOffset = 0;
+  joinPeerVerdict = PageFlipJoinVerdict::Unknown;
+  joinPeerWantsReply = false;
+  joinResolved = false;
+}
+
+bool PageFlipSession::sendHello(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset, bool wantsReply,
+                                bool startsJoin, PageFlipJoinVerdict verdict) {
   PageFlipHello hello;
   hello.compatHash = compatHash;
   hello.bookId = bookId;
   hello.turnSeq = turnSeq;
   hello.spineIndex = spineIndex;
   hello.pageNumber = pageNumber;
+  hello.visibleTextOffset = visibleTextOffset;
   hello.role = role;
   hello.wantsReply = wantsReply;
+  hello.startsJoin = startsJoin;
+  hello.joinVerdict = verdict;
 
   uint8_t wire[PageFlipTransport::MAX_PAYLOAD_BYTES];
   size_t wireLength = 0;
   if (!PageFlipPacket::encodeHello(hello, wire, sizeof(wire), wireLength)) return false;
   return transport.broadcast(wire, wireLength);
+}
+
+bool PageFlipSession::announceHello(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset) {
+  // Greeting means joining, and joining means the pair's relative position is unknown again. A
+  // device sends this on opening the book and whenever its layout moves, and after a layout change
+  // its own saved page number counts pages that no longer exist -- so anything concluded before it
+  // has to go.
+  beginJoinRound();
+  // Nothing has been heard from the peer this round, so there is nothing to have judged.
+  return sendHello(spineIndex, pageNumber, visibleTextOffset, true, true, PageFlipJoinVerdict::Unknown);
+}
+
+bool PageFlipSession::declineJoin(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset) {
+  // The peer greeted with a layout this device cannot pair with. It still gets an answer, because
+  // the answer carries this device's hash and that is how the other user finds out too -- one
+  // device reporting the problem while the other sits silent is the worse outcome.
+  //
+  // What it must not be is a greeting. Two mismatched devices each answering with "and hello to
+  // you" would trade greetings for as long as they sat next to each other; this asks for nothing
+  // back and starts no round.
+  return sendHello(spineIndex, pageNumber, visibleTextOffset, false, false, PageFlipJoinVerdict::Unknown);
+}
+
+bool PageFlipSession::answerJoin(const uint32_t round, const PageFlipJoinVerdict verdict, const int32_t spineIndex,
+                                 const int32_t pageNumber, const uint32_t visibleTextOffset,
+                                 PageFlipJoinResolution& resolution) {
+  // The peer moved between the probe and this answer, so the verdict judges an offset it is no
+  // longer at. Answering anyway would classify the pair from a position neither device holds.
+  if (round != joinRound) return false;
+  if (!joinPeerKnown) return false;
+
+  resolution = PageFlipJoinResolution{};
+  resolution.peerSpineIndex = joinPeerSpineIndex;
+  resolution.peerVisibleTextOffset = joinPeerVisibleTextOffset;
+  resolution.peerRole = joinPeerRole;
+
+  if (!joinResolved) {
+    // Identical first, and by direct equality rather than by the verdicts: two devices on the same
+    // page each find their own next page somewhere the other is not, so both answer NotAdjacent and
+    // the pair reads as divergent. This test is only sound because the join runs behind the layout
+    // agreement of section 5 -- the same offset under two different layouts is not the same page --
+    // which is why the probe is never raised for a peer whose hash has not been checked.
+    const bool identical = spineIndex == joinPeerSpineIndex && visibleTextOffset == joinPeerVisibleTextOffset;
+    if (identical) {
+      resolution.resolved = true;
+      resolution.joinCase = PageFlipJoinCase::Identical;
+    } else if (verdict == PageFlipJoinVerdict::Adjacent) {
+      // The peer is one page after this device, so this device is the front half of the spread.
+      resolution.resolved = true;
+      resolution.joinCase = role == PageFlipRole::Left ? PageFlipJoinCase::Aligned : PageFlipJoinCase::Swapped;
+    } else if (joinPeerVerdict == PageFlipJoinVerdict::Adjacent) {
+      // Mirror image: this device is one page after the peer, so the peer is the front half.
+      resolution.resolved = true;
+      resolution.joinCase =
+          joinPeerRole == PageFlipRole::Left ? PageFlipJoinCase::Aligned : PageFlipJoinCase::Swapped;
+    } else if (verdict == PageFlipJoinVerdict::NotAdjacent && joinPeerVerdict == PageFlipJoinVerdict::NotAdjacent) {
+      // Both sides tested and neither found the other. Only now is the pair genuinely unrelated --
+      // an Unknown on either side is "ask again", never a no, or a device whose section was still
+      // building would put a resume prompt in front of the user for a pair that is perfectly fine.
+      resolution.resolved = true;
+      resolution.joinCase = PageFlipJoinCase::Divergent;
+    }
+    joinResolved = resolution.resolved;
+  }
+
+  // Reply only to a greeting. Answering an answer is what would have two devices talking forever,
+  // and the rule is the same one the presence handshake has always used.
+  if (!joinPeerWantsReply) return true;
+  joinPeerWantsReply = false;
+
+  // Ask for one more round only while the pair is still undecided AND this device contributed
+  // something to decide with. A device that could not test its own position asks for nothing: two
+  // of those would trade greetings at packet rate forever, and the retry it actually needs is its
+  // own re-greeting once its section has settled.
+  const bool wantsReply = !joinResolved && verdict != PageFlipJoinVerdict::Unknown;
+  // Never a restart: however many rounds the exchange takes, it is one negotiation.
+  sendHello(spineIndex, pageNumber, visibleTextOffset, wantsReply, false, verdict);
+  return true;
 }
 
 bool PageFlipSession::offerSettings(const PageFlipRenderSettings& settings) {
@@ -162,7 +261,20 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
     decision.peerWantsReply = hello.wantsReply;
     decision.spineIndex = hello.spineIndex;
     decision.pageNumber = hello.pageNumber;
+    decision.peerVisibleTextOffset = hello.visibleTextOffset;
     decision.applyRoleOffset = hello.role != role;
+
+    // Only a device announcing itself starts a round: a fresh boot, or a layout change that made
+    // everything concluded about the old one meaningless. A reply belongs to the round already
+    // running even when it asks for one more, and restarting on that would classify the pair a
+    // second time -- Identical resolved twice steps the right device forward twice.
+    if (hello.startsJoin) beginJoinRound();
+    joinPeerKnown = true;
+    joinPeerSpineIndex = hello.spineIndex;
+    joinPeerVisibleTextOffset = hello.visibleTextOffset;
+    joinPeerRole = hello.role;
+    joinPeerVerdict = hello.joinVerdict;
+    joinPeerWantsReply = joinPeerWantsReply || hello.wantsReply;
     // The greeting is the earliest a layout difference can be seen and the cheapest place to see
     // it: no position has been applied yet, so nothing has to be undone. Note the counter above is
     // adopted either way -- turnSeq is a session fact, not a layout one, and skipping it would
@@ -175,6 +287,12 @@ bool PageFlipSession::poll(PageFlipDecision& decision) {
     decision.layoutDecided = canCompareLayout(hello.compatHash);
     decision.action = (!decision.layoutDecided || hello.compatHash == compatHash) ? PageFlipAction::PeerHello
                                                                                  : PageFlipAction::Mismatch;
+    // The join runs only behind a layout the pair has agreed on. That ordering is section 4.2's and
+    // it is mandatory: a position is an offset into a pagination, and two devices laid out
+    // differently do not share one. An undecided layout is not agreement either -- the sentinel
+    // means one device has not rendered, so it does not know what it would be agreeing to.
+    decision.joinProbe = decision.action == PageFlipAction::PeerHello && decision.layoutDecided;
+    decision.joinRound = joinRound;
     return true;
   }
 

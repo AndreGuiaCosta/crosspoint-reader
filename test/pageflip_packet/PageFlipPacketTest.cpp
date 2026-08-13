@@ -175,6 +175,7 @@ PageFlipHello sampleHello() {
   hello.visibleTextOffset = 123456u;
   hello.role = PageFlipRole::Left;
   hello.wantsReply = true;
+  hello.startsJoin = false;
   hello.joinVerdict = PageFlipJoinVerdict::NotAdjacent;
   return hello;
 }
@@ -201,27 +202,33 @@ TEST(PageFlipPacket, HelloRoundTripsEveryField) {
   EXPECT_EQ(received.visibleTextOffset, sent.visibleTextOffset);
   EXPECT_EQ(received.role, sent.role);
   EXPECT_EQ(received.wantsReply, sent.wantsReply);
+  EXPECT_EQ(received.startsJoin, sent.startsJoin);
   EXPECT_EQ(received.joinVerdict, sent.joinVerdict);
 }
 
-// The verdict shares the flags byte with the role and the reply bit, so the three must not bleed
-// into each other -- a verdict misread as a role would seat both devices as left.
+// Four independent things share the flags byte, and they must not bleed into each other -- a
+// verdict misread as a role would seat both devices as left, and a reply misread as a restart
+// would re-open a negotiation that had already concluded.
 TEST(PageFlipPacket, HelloFlagsRoundTripInEveryCombination) {
   for (const PageFlipRole role : {PageFlipRole::Left, PageFlipRole::Right}) {
     for (const bool wantsReply : {false, true}) {
-      for (const PageFlipJoinVerdict verdict :
-           {PageFlipJoinVerdict::Unknown, PageFlipJoinVerdict::Adjacent, PageFlipJoinVerdict::NotAdjacent}) {
-        PageFlipHello sent = sampleHello();
-        sent.role = role;
-        sent.wantsReply = wantsReply;
-        sent.joinVerdict = verdict;
-        const std::vector<uint8_t> wire = encoded(sent);
+      for (const bool startsJoin : {false, true}) {
+        for (const PageFlipJoinVerdict verdict :
+             {PageFlipJoinVerdict::Unknown, PageFlipJoinVerdict::Adjacent, PageFlipJoinVerdict::NotAdjacent}) {
+          PageFlipHello sent = sampleHello();
+          sent.role = role;
+          sent.wantsReply = wantsReply;
+          sent.startsJoin = startsJoin;
+          sent.joinVerdict = verdict;
+          const std::vector<uint8_t> wire = encoded(sent);
 
-        PageFlipHello received;
-        ASSERT_TRUE(PageFlipPacket::decodeHello(wire.data(), wire.size(), received));
-        EXPECT_EQ(received.role, role);
-        EXPECT_EQ(received.wantsReply, wantsReply);
-        EXPECT_EQ(received.joinVerdict, verdict);
+          PageFlipHello received;
+          ASSERT_TRUE(PageFlipPacket::decodeHello(wire.data(), wire.size(), received));
+          EXPECT_EQ(received.role, role);
+          EXPECT_EQ(received.wantsReply, wantsReply);
+          EXPECT_EQ(received.startsJoin, startsJoin);
+          EXPECT_EQ(received.joinVerdict, verdict);
+        }
       }
     }
   }
@@ -251,6 +258,7 @@ TEST(PageFlipPacket, HelloWireLayoutIsPinned) {
   sent.visibleTextOffset = 0x0000FEDCu;
   sent.role = PageFlipRole::Right;
   sent.wantsReply = false;
+  sent.startsJoin = true;
   sent.joinVerdict = PageFlipJoinVerdict::NotAdjacent;
 
   const std::vector<uint8_t> wire = encoded(sent);
@@ -258,7 +266,7 @@ TEST(PageFlipPacket, HelloWireLayoutIsPinned) {
       0x50, 0x46,              // magic 'PF', little-endian
       0x01,                    // protocol version
       0x02,                    // message: Hello
-      0x13,                    // flags: right | answer (the direction bit) | verdict NotAdjacent<<3
+      0x33,                    // flags: right | answer | verdict NotAdjacent<<3 | join restart
       0x44, 0x33, 0x22, 0x11,  // compatHash
       0x88, 0x77, 0x66, 0x55,  // bookId
       0xCC, 0xBB, 0xAA, 0x99,  // turnSeq

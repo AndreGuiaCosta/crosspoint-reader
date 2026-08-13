@@ -1205,6 +1205,21 @@ bool EpubReaderActivity::pageflipSettledPage(int& page) {
   return true;
 }
 
+bool EpubReaderActivity::pageflipSettledPosition(int& page, uint32_t& visibleTextOffset) {
+  if (RenderLock::peek()) return false;
+  RenderLock lock(*this);
+  if (!section) return false;
+  page = section->currentPage;
+  if (page < 0 || page >= section->pageCount) return false;
+  // The content anchor, read the same way saveProgress and rememberCurrentContentOffset read it: an
+  // in-memory lookup while the section is building, and one small file read otherwise. Both are
+  // rare -- this is the join and the layout-change re-greeting, not the page-turn path.
+  const auto offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(page));
+  if (!offset.has_value()) return false;
+  visibleTextOffset = *offset;
+  return true;
+}
+
 void EpubReaderActivity::pageflipRefreshCompat() {
   // The viewport is a render() output, so the fingerprint cannot be built in pageflipBegin().
   // Recomputing every pump also covers every later change without needing a hook per setting:
@@ -1217,9 +1232,12 @@ void EpubReaderActivity::pageflipRefreshCompat() {
   if (hash == pageflipCompatHash) return;
 
   // Nothing is committed until the position can be read: the greeting and the stored hash have to
-  // go out together, so a render in flight defers the whole thing to the next pump.
+  // go out together, so a render in flight defers the whole thing to the next pump. The greeting
+  // now carries the join's content anchor too (section 4.2), so it waits on that as well -- a
+  // greeting without one would announce a position the peer cannot compare itself against.
   int page = 0;
-  if (!pageflipSettledPage(page)) return;
+  uint32_t offset = 0;
+  if (!pageflipSettledPosition(page, offset)) return;
 
   pageflipCompatHash = hash;
   pageflip->setBook(pageflipBookId, hash);
@@ -1227,7 +1245,7 @@ void EpubReaderActivity::pageflipRefreshCompat() {
   // about a layout this device no longer has. The mismatch latch is deliberately NOT cleared here
   // -- it clears when a compatible peer actually answers, so the notice tracks the real state
   // rather than re-firing on every setting the user touches.
-  pageflip->announceHello(currentSpineIndex, page, true);
+  pageflip->announceHello(currentSpineIndex, page, offset);
   LOG_DBG("ERS", "PageFlip layout hash %08X, re-greeting", static_cast<unsigned>(hash));
 }
 
@@ -1309,9 +1327,10 @@ void EpubReaderActivity::pageflipPump() {
   // Owed greeting answer. Latched by the receive path below so the answer's position is read under
   // the lock like every other outgoing position, and retried rather than dropped -- a greeting is
   // sent once, so losing the answer leaves the peer waiting indefinitely.
-  if (pageflipOweHelloAnswer && pageflipSettledPage(settledPage)) {
+  uint32_t settledOffset = 0;
+  if (pageflipOweHelloAnswer && pageflipSettledPosition(settledPage, settledOffset)) {
     pageflipOweHelloAnswer = false;
-    pageflip->announceHello(currentSpineIndex, settledPage, false);
+    pageflip->declineJoin(currentSpineIndex, settledPage, settledOffset);
   }
 
   PageFlipDecision decision;

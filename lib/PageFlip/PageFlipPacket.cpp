@@ -51,6 +51,7 @@ constexpr uint8_t FLAG_AT_BOOK_END = 1 << 2;
 // Hello only: the join verdict (section 4.2), two bits wide, in the bits a turn does not use.
 constexpr uint8_t JOIN_VERDICT_SHIFT = 3;
 constexpr uint8_t JOIN_VERDICT_MASK = 0b11 << JOIN_VERDICT_SHIFT;
+constexpr uint8_t FLAG_JOIN_RESTART = 1 << 5;
 
 // Explicit little-endian, byte at a time: the wire layout must not inherit the host's endianness,
 // and a memcpy of a wider type would.
@@ -183,6 +184,7 @@ bool encodeHello(const PageFlipHello& hello, uint8_t* output, size_t capacity, s
   // The direction bit reads as "this is an answer" on a hello: a greeting sets wantsReply, so the
   // bit is clear, and the answer sets the bit and is never answered in turn.
   if (!hello.wantsReply) flags |= FLAG_BACKWARD;
+  if (hello.startsJoin) flags |= FLAG_JOIN_RESTART;
   flags |= static_cast<uint8_t>(static_cast<uint8_t>(hello.joinVerdict) << JOIN_VERDICT_SHIFT) & JOIN_VERDICT_MASK;
 
   if (!encodeCommon(output, capacity, outputLength, PageFlipMessage::Hello, flags, hello.compatHash, hello.bookId,
@@ -202,6 +204,7 @@ bool decodeHello(const uint8_t* data, size_t length, PageFlipHello& hello) {
   const uint8_t flags = data[OFF_FLAGS];
   hello.role = (flags & FLAG_ROLE_RIGHT) ? PageFlipRole::Right : PageFlipRole::Left;
   hello.wantsReply = (flags & FLAG_BACKWARD) == 0;
+  hello.startsJoin = (flags & FLAG_JOIN_RESTART) != 0;
   hello.joinVerdict = toJoinVerdict(static_cast<uint8_t>((flags & JOIN_VERDICT_MASK) >> JOIN_VERDICT_SHIFT));
   hello.compatHash = readU32(data + OFF_COMPAT_HASH);
   hello.bookId = readU32(data + OFF_BOOK_ID);
