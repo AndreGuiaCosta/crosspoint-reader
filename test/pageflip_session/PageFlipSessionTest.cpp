@@ -311,7 +311,7 @@ TEST_F(PageFlipSessionTest, DeclineAsksForNothingBack) {
   Pair pair;
   ASSERT_TRUE(pair.start());
 
-  ASSERT_TRUE(pair.right.declineJoin(1, 1, 90));
+  ASSERT_TRUE(pair.right.announcePresence(1, 1, 90));
 
   PageFlipDecision decision;
   ASSERT_TRUE(pollWithRetry(pair.left, decision));
