@@ -128,7 +128,8 @@ TEST(PageFlipPacket, DecodeRejectsTruncatedPacketAtEveryLength) {
   const std::vector<uint8_t> wire = encoded(sampleTurn());
   for (size_t length = 0; length < wire.size(); ++length) {
     PageFlipTurn received;
-    EXPECT_FALSE(PageFlipPacket::decodeTurn(wire.data(), length, received)) << "accepted a " << length << "-byte packet";
+    EXPECT_FALSE(PageFlipPacket::decodeTurn(wire.data(), length, received))
+        << "accepted a " << length << "-byte packet";
   }
 }
 

@@ -90,10 +90,20 @@ class EpubReaderActivity final : public Activity {
   // pop one. Dropping the pairing is NOT delayed; only telling the user is.
   unsigned long pageflipMismatchSinceMs = 0;
   static constexpr unsigned long MISMATCH_CONFIRM_MS = 4000;
-  // A greeting we owe an answer to. Latched rather than answered inline because the answer carries
-  // this device's page, which cannot be read while a render is in flight -- and dropping the answer
-  // would leave the peer waiting forever, since a greeting is sent once.
-  bool pageflipOweHelloAnswer = false;
+  // A greeting from a peer this device cannot join with -- an incompatible layout, or one neither
+  // side has decided yet. It still gets an answer, because the answer carries this device's own
+  // hash and that is how the other user gets told; latched rather than sent inline because the
+  // answer carries a position, which cannot be read while a render is in flight.
+  bool pageflipOweJoinDecline = false;
+
+  // The join negotiation (docs/pageflip.md section 4.2). A probe arrives on the receive path and is
+  // answered from the pump, for the same reason: the verdict and this device's own position both
+  // have to be read with no render in flight, and they have to be read together or the pair is
+  // classified from two different moments.
+  bool pageflipJoinProbePending = false;
+  uint32_t pageflipJoinRound = 0;
+  int32_t pageflipJoinPeerSpineIndex = 0;
+  uint32_t pageflipJoinPeerOffset = 0;
   // A device being read from but not pressed sees no input of its own, so peer traffic has to keep
   // it awake. Only decoded packets from a compatible peer count -- see the receive path.
   static constexpr unsigned long PEER_ACTIVITY_WINDOW_MS = 3000;
@@ -301,6 +311,17 @@ class EpubReaderActivity final : public Activity {
   // Drops back to solo reading and arms the notice. A peer that cannot apply our turns must not
   // gate the two-step advance.
   void pageflipReportMismatch(const PageFlipDecision& decision);
+  // This device's whole contribution to the join (section 4.2), taken under one lock: where it is,
+  // and whether its next page starts where the peer says it is. Returns false when a render is in
+  // flight or the section cannot answer, in which case the probe stays latched for the next pump.
+  bool pageflipJoinAnswerInputs(int32_t peerSpineIndex, uint32_t peerVisibleTextOffset, int& page,
+                                uint32_t& visibleTextOffset, PageFlipJoinVerdict& verdict);
+  // Answers a latched probe and acts on the classification if it completed one.
+  void pageflipAnswerJoinProbe();
+  void pageflipApplyJoin(const PageFlipJoinResolution& resolution);
+  // Lands on a content offset in another spine, the one navigation that survives any difference in
+  // pagination. Used for the cases where this device has to move to where the peer is.
+  void pageflipSeekToOffset(int32_t spineIndex, uint32_t visibleTextOffset);
   // Force-sync (section 5.1). The prompt owns Confirm and Back while it is up; returns true when it
   // consumed the input, so the reader menu does not also open behind it.
   bool pageflipHandleSyncInput();

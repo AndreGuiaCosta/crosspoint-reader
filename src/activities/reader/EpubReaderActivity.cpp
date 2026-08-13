@@ -1176,7 +1176,8 @@ void EpubReaderActivity::pageflipBegin() {
   // pageflipRefreshCompat() sends the first one.
   session->setBook(pageflipBookId, 0);
   pageflip = std::move(session);
-  LOG_INF("ERS", "PageFlip link up as %s, waiting for a peer", defaultPageFlipRole() == PageFlipRole::Left ? "left" : "right");
+  LOG_INF("ERS", "PageFlip link up as %s, waiting for a peer",
+          defaultPageFlipRole() == PageFlipRole::Left ? "left" : "right");
 }
 
 void EpubReaderActivity::pageflipEnd() {
@@ -1187,7 +1188,8 @@ void EpubReaderActivity::pageflipEnd() {
   pageflipPeerPresent = false;
   pageflipCompatHash = 0;
   pageflipCompatMismatch = false;
-  pageflipOweHelloAnswer = false;
+  pageflipOweJoinDecline = false;
+  pageflipJoinProbePending = false;
   pageflipMismatchSinceMs = 0;
   pageflipSyncState = PageFlipSyncState::None;
   pendingPageflipSyncNotice = false;
@@ -1218,6 +1220,122 @@ bool EpubReaderActivity::pageflipSettledPosition(int& page, uint32_t& visibleTex
   if (!offset.has_value()) return false;
   visibleTextOffset = *offset;
   return true;
+}
+
+bool EpubReaderActivity::pageflipJoinAnswerInputs(const int32_t peerSpineIndex, const uint32_t peerVisibleTextOffset,
+                                                 int& page, uint32_t& visibleTextOffset,
+                                                 PageFlipJoinVerdict& verdict) {
+  if (RenderLock::peek()) return false;
+  RenderLock lock(*this);
+  if (!section) return false;
+  page = section->currentPage;
+  if (page < 0 || page >= section->pageCount) return false;
+  const auto ownOffset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(page));
+  if (!ownOffset.has_value()) return false;
+  visibleTextOffset = *ownOffset;
+
+  // The one question this device can answer without loading anything: does my next page start where
+  // the peer says it is? Testing the other direction -- whether the PEER's next page is mine --
+  // would mean laying out a section this device does not have, possibly a whole chapter, which is
+  // why section 4.2 has each device test only forward from itself and combines the two answers.
+  const int nextPage = page + 1;
+  if (nextPage < section->pageCount) {
+    if (peerSpineIndex != currentSpineIndex) {
+      verdict = PageFlipJoinVerdict::NotAdjacent;
+      return true;
+    }
+    const auto nextOffset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(nextPage));
+    verdict = !nextOffset.has_value()              ? PageFlipJoinVerdict::Unknown
+              : *nextOffset == peerVisibleTextOffset ? PageFlipJoinVerdict::Adjacent
+                                                     : PageFlipJoinVerdict::NotAdjacent;
+    return true;
+  }
+
+  // Past the last page laid out. Whether that is the last page of the CHAPTER is a different
+  // question, and one a section still building cannot answer: pageCount is a watermark until it
+  // finalizes (section 3), so "there is no next page" would be a guess. Unknown means ask again,
+  // and the build settling is what makes the retry produce an answer.
+  if (section->isBuilding() || section->isPartial()) {
+    verdict = PageFlipJoinVerdict::Unknown;
+    return true;
+  }
+
+  // This really is the chapter's last page, so this device's next page is page 0 of the next spine
+  // -- which it must not load to check. It does not have to: page 0 of any section starts at offset
+  // 0, so the peer's own report answers it. Without this branch an ordinary aligned pair straddling
+  // a chapter boundary could never answer Adjacent, and would be classified divergent forever.
+  verdict = (peerSpineIndex == currentSpineIndex + 1 && peerVisibleTextOffset == 0)
+                ? PageFlipJoinVerdict::Adjacent
+                : PageFlipJoinVerdict::NotAdjacent;
+  return true;
+}
+
+void EpubReaderActivity::pageflipAnswerJoinProbe() {
+  int page = 0;
+  uint32_t offset = 0;
+  PageFlipJoinVerdict verdict = PageFlipJoinVerdict::Unknown;
+  if (!pageflipJoinAnswerInputs(pageflipJoinPeerSpineIndex, pageflipJoinPeerOffset, page, offset, verdict)) return;
+
+  pageflipJoinProbePending = false;
+  PageFlipJoinResolution resolution;
+  if (!pageflip->answerJoin(pageflipJoinRound, verdict, currentSpineIndex, page, offset, resolution)) return;
+  if (!resolution.resolved) return;
+
+  LOG_INF("ERS", "PageFlip join: %s (peer at spine %d offset %u)",
+          resolution.joinCase == PageFlipJoinCase::Identical  ? "same page, making the spread"
+          : resolution.joinCase == PageFlipJoinCase::Aligned  ? "already a spread"
+          : resolution.joinCase == PageFlipJoinCase::Swapped  ? "devices swapped"
+                                                             : "positions unrelated",
+          resolution.peerSpineIndex, static_cast<unsigned>(resolution.peerVisibleTextOffset));
+  pageflipApplyJoin(resolution);
+}
+
+void EpubReaderActivity::pageflipSeekToOffset(const int32_t spineIndex, const uint32_t visibleTextOffset) {
+  {
+    // Same care as a chapter jump: the section must not be dropped mid-render.
+    RenderLock lock(*this);
+    currentSpineIndex = spineIndex;
+    nextPageNumber = 0;
+    pendingPageJump.reset();
+    // An explicit content-offset landing, which outranks every other reposition and survives any
+    // difference in pagination -- the same path a bookmark open takes.
+    pendingOffsetJump = visibleTextOffset;
+    section.reset();
+  }
+  requestUpdate();
+}
+
+void EpubReaderActivity::pageflipApplyJoin(const PageFlipJoinResolution& resolution) {
+  switch (resolution.joinCase) {
+    case PageFlipJoinCase::Identical:
+      // The pair is on one page and owes itself a spread. The right device makes one; the left
+      // stays put, so the reader keeps the page it was already looking at.
+      //
+      // Deliberately not announced. This is a local reposition, not a turn: sending it as one would
+      // bump turnSeq and the peer would advance two pages off it, breaking the spread on the very
+      // join that created it.
+      if (pageflip->getRole() == PageFlipRole::Right) {
+        applyAdvance(true, 1);
+        requestUpdate();
+      }
+      break;
+
+    case PageFlipJoinCase::Aligned:
+      break;  // the ordinary reopen: the spread is already there, so resume in silence
+
+    case PageFlipJoinCase::Swapped:
+      // The user physically swapped the devices, so each takes the other's position and the pair is
+      // back in role order. Both devices reach this and both move, which is what makes the exchange
+      // a swap rather than one device chasing the other.
+      pageflipSeekToOffset(resolution.peerSpineIndex, resolution.peerVisibleTextOffset);
+      break;
+
+    case PageFlipJoinCase::Divergent:
+      // Section 4.3: the two positions are genuinely unrelated, so the user picks. Prompt lands in
+      // the next step.
+      LOG_INF("ERS", "PageFlip join: divergent positions, awaiting the user's choice");
+      break;
+  }
 }
 
 void EpubReaderActivity::pageflipRefreshCompat() {
@@ -1253,7 +1371,7 @@ void EpubReaderActivity::pageflipReportMismatch(const PageFlipDecision& decision
   // Answer a greeting even from an incompatible peer. The answer carries this device's hash, which
   // is how the other user gets told too -- one device reporting the problem and the other silently
   // doing nothing is a worse outcome than either device alone.
-  if (decision.peerWantsReply) pageflipOweHelloAnswer = true;
+  if (decision.peerWantsReply) pageflipOweJoinDecline = true;
 
   // Dropping presence is the substance of this phase. A peer that rejects our turns must not gate
   // the two-step advance: leaving it set means this device turns two pages per press while the peer
@@ -1328,10 +1446,15 @@ void EpubReaderActivity::pageflipPump() {
   // the lock like every other outgoing position, and retried rather than dropped -- a greeting is
   // sent once, so losing the answer leaves the peer waiting indefinitely.
   uint32_t settledOffset = 0;
-  if (pageflipOweHelloAnswer && pageflipSettledPosition(settledPage, settledOffset)) {
-    pageflipOweHelloAnswer = false;
+  if (pageflipOweJoinDecline && pageflipSettledPosition(settledPage, settledOffset)) {
+    pageflipOweJoinDecline = false;
     pageflip->declineJoin(currentSpineIndex, settledPage, settledOffset);
   }
+
+  // The join's answer, for the same reason and with the same retry: it carries a position, and it
+  // must not be computed while a render is in flight. Answering also sends this device's reply, so
+  // a probe left unanswered would leave the peer waiting -- which is why it stays latched.
+  if (pageflipJoinProbePending) pageflipAnswerJoinProbe();
 
   PageFlipDecision decision;
   if (!pageflip->poll(decision)) return;
@@ -1367,7 +1490,7 @@ void EpubReaderActivity::pageflipPump() {
   // this device's first render lands, and the peer does the same, so agreement arrives a round
   // later. Pairing here instead would license the two-step advance on a layout nobody has checked.
   if (!decision.layoutDecided) {
-    if (decision.peerWantsReply) pageflipOweHelloAnswer = true;
+    if (decision.peerWantsReply) pageflipOweJoinDecline = true;
     return;
   }
 
@@ -1389,6 +1512,16 @@ void EpubReaderActivity::pageflipPump() {
     LOG_INF("ERS", "PageFlip peer layout compatible again");
   }
 
+  // The join's question, latched for the pump (section 4.2). Recorded before the switch because it
+  // rides the greeting and its answer IS the greeting's reply -- there is no second packet to send,
+  // and no case of its own below.
+  if (decision.joinProbe) {
+    pageflipJoinProbePending = true;
+    pageflipJoinRound = decision.joinRound;
+    pageflipJoinPeerSpineIndex = decision.spineIndex;
+    pageflipJoinPeerOffset = decision.peerVisibleTextOffset;
+  }
+
   switch (decision.action) {
     case PageFlipAction::AdvanceTwo:
       applyAdvance(decision.forward, 2);
@@ -1403,9 +1536,9 @@ void EpubReaderActivity::pageflipPump() {
       LOG_DBG("ERS", "PageFlip heal -> spine %d page %d", decision.spineIndex, decision.pageNumber);
       break;
     case PageFlipAction::PeerHello:
-      // Answer a greeting once. The answer asks for nothing back, so the exchange ends after two
-      // packets instead of two devices greeting each other forever.
-      if (decision.peerWantsReply) pageflipOweHelloAnswer = true;
+      // Nothing to do here: the reply to a compatible peer's greeting is the join's answer, latched
+      // above and sent from the pump. A greeting that could not be joined with never reaches this
+      // switch -- it took the mismatch or undecided-layout path, which owes a decline instead.
       break;
     case PageFlipAction::Mismatch:
       break;  // returned above, before this device counted the peer as present
