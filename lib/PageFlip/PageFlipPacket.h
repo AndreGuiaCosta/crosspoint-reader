@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "PageFlipRenderSettings.h"
+
 // PageFlip wire format (docs/pageflip.md section 3).
 //
 // Two paired devices exchange positions, never framebuffers: a turn is a couple of dozen bytes.
@@ -20,12 +22,16 @@ enum class PageFlipRole : uint8_t {
   Right = 1,
 };
 
-// Discriminates the packets that share the transport. Only Turn is implemented so far; Hello
-// belongs to the join negotiation (section 4.2) and is reserved here so adding it later does not
-// break the wire.
+// Discriminates the packets that share the transport.
 enum class PageFlipMessage : uint8_t {
   Turn = 1,
   Hello = 2,
+  // The three-step settings force-sync of section 5.1. Split into offer / answer / apply so that
+  // an abort really does leave nothing written: the device being pushed to gets to preflight the
+  // change and refuse it before anyone commits.
+  SyncOffer = 3,
+  SyncAnswer = 4,
+  SyncApply = 5,
 };
 
 // A page turn that has already been applied on the sender.
@@ -58,6 +64,34 @@ struct PageFlipHello {
   bool wantsReply = true;
 };
 
+// A push of one device's render settings onto the other (section 5.1). Sent by the device the user
+// confirmed on; it is the source of truth for the whole exchange.
+struct PageFlipSyncOffer {
+  uint32_t compatHash = 0;  // the layout the peer must end up with for the push to be worth applying
+  uint32_t bookId = 0;
+  PageFlipRenderSettings settings;
+  PageFlipRole role = PageFlipRole::Left;
+};
+
+// The preflight verdict, from the device being pushed to. `resultHash` is the compatHash that
+// device would have *after* applying, which is what the source actually decides on -- a boolean
+// "I have that font" would pass while leaving the two devices laid out differently.
+struct PageFlipSyncAnswer {
+  uint32_t targetHash = 0;  // echo of the offer's compatHash: which offer this answers
+  uint32_t bookId = 0;
+  uint32_t resultHash = 0;  // 0 when the peer could not evaluate the offer at all
+  PageFlipSyncResult result = PageFlipSyncResult::Unknown;
+  PageFlipRole role = PageFlipRole::Left;  // names the device in the abort message
+};
+
+// The commit. Only sent once an answer has proven the peer converges, so the expensive part -- a
+// settings write and a full layout rebuild -- never runs for a change that would not have worked.
+struct PageFlipSyncApply {
+  uint32_t targetHash = 0;
+  uint32_t bookId = 0;
+  PageFlipRole role = PageFlipRole::Left;
+};
+
 namespace PageFlipPacket {
 
 inline constexpr uint16_t MAGIC = 0x4650;  // 'PF', little-endian on the wire
@@ -65,6 +99,13 @@ inline constexpr uint8_t PROTOCOL_VERSION = 1;
 // magic(2) + version(1) + message(1) + flags(1) + compatHash(4) + bookId(4) + turnSeq(4)
 // + spineIndex(4) + pageNumber(4)
 inline constexpr size_t TURN_BYTES = 25;
+// The sync messages: header(5) + the fields listed on each encoder below. The offer is variable
+// length because the font name is length-prefixed -- a built-in family sends no name at all, and
+// the worst case is still well inside PageFlipTransport::MAX_PAYLOAD_BYTES.
+inline constexpr size_t SYNC_OFFER_MIN_BYTES = 32;
+inline constexpr size_t SYNC_OFFER_MAX_BYTES = SYNC_OFFER_MIN_BYTES + PageFlipRenderSettings::FONT_NAME_MAX_LENGTH;
+inline constexpr size_t SYNC_ANSWER_BYTES = 18;
+inline constexpr size_t SYNC_APPLY_BYTES = 13;
 
 // Writes a Turn packet. Returns false without touching `output` if `capacity` is too small.
 bool encodeTurn(const PageFlipTurn& turn, uint8_t* output, size_t capacity, size_t& outputLength);
@@ -78,6 +119,22 @@ bool decodeTurn(const uint8_t* data, size_t length, PageFlipTurn& turn);
 // Same wire layout as a turn, so both share one set of field offsets.
 bool encodeHello(const PageFlipHello& hello, uint8_t* output, size_t capacity, size_t& outputLength);
 bool decodeHello(const uint8_t* data, size_t length, PageFlipHello& hello);
+
+// Settings force-sync (section 5.1). Same rules as above: explicit little-endian, short buffers
+// rejected, trailing bytes tolerated.
+//
+// The offer's font name rides length-prefixed rather than as a fixed 32-byte field, so the common
+// case (a built-in family, no name) costs nothing. A name longer than the setting can hold is
+// rejected outright rather than truncated -- a truncated family name would resolve to a different
+// font, or to none, which is the exact failure the preflight exists to catch.
+bool encodeSyncOffer(const PageFlipSyncOffer& offer, uint8_t* output, size_t capacity, size_t& outputLength);
+bool decodeSyncOffer(const uint8_t* data, size_t length, PageFlipSyncOffer& offer);
+
+bool encodeSyncAnswer(const PageFlipSyncAnswer& answer, uint8_t* output, size_t capacity, size_t& outputLength);
+bool decodeSyncAnswer(const uint8_t* data, size_t length, PageFlipSyncAnswer& answer);
+
+bool encodeSyncApply(const PageFlipSyncApply& apply, uint8_t* output, size_t capacity, size_t& outputLength);
+bool decodeSyncApply(const uint8_t* data, size_t length, PageFlipSyncApply& apply);
 
 // Peeks the message type without validating the rest, so a receive loop can dispatch before
 // decoding. Returns false when the buffer is not a PageFlip packet at all.

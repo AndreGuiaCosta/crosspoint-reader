@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
 #include <vector>
 
 #include "PageFlip/PageFlipPacket.h"
+#include "PageFlip/PageFlipTransport.h"
 
 namespace {
 
@@ -159,11 +163,235 @@ TEST(PageFlipPacket, DecodeToleratesTrailingBytes) {
   EXPECT_EQ(received.turnSeq, sampleTurn().turnSeq);
 }
 
+// --- settings force-sync (docs/pageflip.md section 5.1) ---
+
+PageFlipSyncOffer sampleOffer() {
+  PageFlipSyncOffer offer;
+  offer.compatHash = 0xABCDEF01u;
+  offer.bookId = 0x01020304u;
+  offer.role = PageFlipRole::Left;
+  offer.settings.fontId = 4242;
+  offer.settings.viewportWidth = 760;
+  offer.settings.viewportHeight = 430;
+  offer.settings.fontFamily = 2;
+  offer.settings.fontPointSize = 16;
+  offer.settings.lineSpacing = 1;
+  offer.settings.paragraphAlignment = 1;
+  offer.settings.screenMargin = 20;
+  offer.settings.imageRendering = 1;
+  offer.settings.extraParagraphSpacing = 1;
+  offer.settings.hyphenationEnabled = 1;
+  offer.settings.embeddedStyle = 1;
+  offer.settings.focusReadingEnabled = 0;
+  std::snprintf(offer.settings.sdFontFamilyName, sizeof(offer.settings.sdFontFamilyName), "Bookerly");
+  return offer;
+}
+
+std::vector<uint8_t> encodedOffer(const PageFlipSyncOffer& offer) {
+  std::vector<uint8_t> buffer(PageFlipPacket::SYNC_OFFER_MAX_BYTES);
+  size_t length = 0;
+  EXPECT_TRUE(PageFlipPacket::encodeSyncOffer(offer, buffer.data(), buffer.size(), length));
+  buffer.resize(length);
+  return buffer;
+}
+
+TEST(PageFlipPacket, SyncOfferRoundTripsEverySetting) {
+  const PageFlipSyncOffer sent = sampleOffer();
+  const std::vector<uint8_t> wire = encodedOffer(sent);
+
+  PageFlipSyncOffer received;
+  ASSERT_TRUE(PageFlipPacket::decodeSyncOffer(wire.data(), wire.size(), received));
+  EXPECT_EQ(received.compatHash, sent.compatHash);
+  EXPECT_EQ(received.bookId, sent.bookId);
+  EXPECT_EQ(received.role, sent.role);
+  EXPECT_EQ(received.settings.fontId, sent.settings.fontId);
+  EXPECT_EQ(received.settings.viewportWidth, sent.settings.viewportWidth);
+  EXPECT_EQ(received.settings.viewportHeight, sent.settings.viewportHeight);
+  EXPECT_EQ(received.settings.fontFamily, sent.settings.fontFamily);
+  EXPECT_EQ(received.settings.fontPointSize, sent.settings.fontPointSize);
+  EXPECT_EQ(received.settings.lineSpacing, sent.settings.lineSpacing);
+  EXPECT_EQ(received.settings.paragraphAlignment, sent.settings.paragraphAlignment);
+  EXPECT_EQ(received.settings.screenMargin, sent.settings.screenMargin);
+  EXPECT_EQ(received.settings.imageRendering, sent.settings.imageRendering);
+  EXPECT_EQ(received.settings.extraParagraphSpacing, sent.settings.extraParagraphSpacing);
+  EXPECT_EQ(received.settings.hyphenationEnabled, sent.settings.hyphenationEnabled);
+  EXPECT_EQ(received.settings.embeddedStyle, sent.settings.embeddedStyle);
+  EXPECT_EQ(received.settings.focusReadingEnabled, sent.settings.focusReadingEnabled);
+  EXPECT_STREQ(received.settings.sdFontFamilyName, sent.settings.sdFontFamilyName);
+}
+
+// A built-in family sends no name at all, and the longest name the setting can hold must still fit
+// the wire -- those are the two ends of the length-prefixed field.
+TEST(PageFlipPacket, SyncOfferCarriesEveryFontNameLength) {
+  for (size_t nameLength = 0; nameLength <= PageFlipRenderSettings::FONT_NAME_MAX_LENGTH; ++nameLength) {
+    PageFlipSyncOffer sent = sampleOffer();
+    const std::string name(nameLength, 'x');
+    std::snprintf(sent.settings.sdFontFamilyName, sizeof(sent.settings.sdFontFamilyName), "%s", name.c_str());
+
+    const std::vector<uint8_t> wire = encodedOffer(sent);
+    EXPECT_EQ(wire.size(), PageFlipPacket::SYNC_OFFER_MIN_BYTES + nameLength);
+    EXPECT_LE(wire.size(), PageFlipTransport::MAX_PAYLOAD_BYTES) << "an offer must fit one datagram";
+
+    PageFlipSyncOffer received;
+    ASSERT_TRUE(PageFlipPacket::decodeSyncOffer(wire.data(), wire.size(), received));
+    EXPECT_STREQ(received.settings.sdFontFamilyName, name.c_str());
+  }
+}
+
+// A name longer than the receiving setting must be refused, not truncated: a truncated family name
+// resolves to a different font or to none, which is the silent divergence the preflight exists to
+// catch. The encoder cannot produce one, so the check has to hold against a hand-built packet.
+TEST(PageFlipPacket, SyncOfferRejectsAnOverlongFontName) {
+  std::vector<uint8_t> wire = encodedOffer(sampleOffer());
+  wire[31] = PageFlipRenderSettings::FONT_NAME_MAX_LENGTH + 1;
+  wire.resize(PageFlipPacket::SYNC_OFFER_MIN_BYTES + PageFlipRenderSettings::FONT_NAME_MAX_LENGTH + 1, 'x');
+
+  PageFlipSyncOffer received;
+  EXPECT_FALSE(PageFlipPacket::decodeSyncOffer(wire.data(), wire.size(), received));
+}
+
+// The name is length-prefixed on the wire and handed to C string APIs on the other side, so the
+// decoder owns the terminator. A shorter name landing in a buffer that held a longer one must not
+// leave the old tail visible.
+TEST(PageFlipPacket, SyncOfferTerminatesTheFontNameItWrites) {
+  PageFlipSyncOffer sent = sampleOffer();
+  std::snprintf(sent.settings.sdFontFamilyName, sizeof(sent.settings.sdFontFamilyName), "Lit");
+  const std::vector<uint8_t> wire = encodedOffer(sent);
+
+  PageFlipSyncOffer received;
+  std::memset(received.settings.sdFontFamilyName, 'Z', sizeof(received.settings.sdFontFamilyName) - 1);
+  received.settings.sdFontFamilyName[sizeof(received.settings.sdFontFamilyName) - 1] = '\0';
+  ASSERT_TRUE(PageFlipPacket::decodeSyncOffer(wire.data(), wire.size(), received));
+  EXPECT_STREQ(received.settings.sdFontFamilyName, "Lit");
+}
+
+TEST(PageFlipPacket, SyncAnswerAndApplyRoundTrip) {
+  PageFlipSyncAnswer answer;
+  answer.targetHash = 0x11112222u;
+  answer.bookId = 0x33334444u;
+  answer.resultHash = 0x55556666u;
+  answer.result = PageFlipSyncResult::MissingFont;
+  answer.role = PageFlipRole::Right;
+
+  std::vector<uint8_t> answerWire(PageFlipPacket::SYNC_ANSWER_BYTES);
+  size_t length = 0;
+  ASSERT_TRUE(PageFlipPacket::encodeSyncAnswer(answer, answerWire.data(), answerWire.size(), length));
+  EXPECT_EQ(length, PageFlipPacket::SYNC_ANSWER_BYTES);
+
+  PageFlipSyncAnswer decodedAnswer;
+  ASSERT_TRUE(PageFlipPacket::decodeSyncAnswer(answerWire.data(), answerWire.size(), decodedAnswer));
+  EXPECT_EQ(decodedAnswer.targetHash, answer.targetHash);
+  EXPECT_EQ(decodedAnswer.bookId, answer.bookId);
+  EXPECT_EQ(decodedAnswer.resultHash, answer.resultHash);
+  EXPECT_EQ(decodedAnswer.result, answer.result);
+  EXPECT_EQ(decodedAnswer.role, answer.role);
+
+  PageFlipSyncApply apply;
+  apply.targetHash = 0x77778888u;
+  apply.bookId = 0x9999AAAAu;
+  apply.role = PageFlipRole::Right;
+
+  std::vector<uint8_t> applyWire(PageFlipPacket::SYNC_APPLY_BYTES);
+  ASSERT_TRUE(PageFlipPacket::encodeSyncApply(apply, applyWire.data(), applyWire.size(), length));
+  EXPECT_EQ(length, PageFlipPacket::SYNC_APPLY_BYTES);
+
+  PageFlipSyncApply decodedApply;
+  ASSERT_TRUE(PageFlipPacket::decodeSyncApply(applyWire.data(), applyWire.size(), decodedApply));
+  EXPECT_EQ(decodedApply.targetHash, apply.targetHash);
+  EXPECT_EQ(decodedApply.bookId, apply.bookId);
+  EXPECT_EQ(decodedApply.role, apply.role);
+}
+
+// Only an explicit Ok may commit, so a verdict from a future build has to read as "not Ok" rather
+// than as a decode failure -- rejecting it outright would leave the sender waiting forever for an
+// answer that did arrive.
+TEST(PageFlipPacket, SyncAnswerReadsAnUnknownVerdictAsNotOk) {
+  PageFlipSyncAnswer answer;
+  answer.result = PageFlipSyncResult::Ok;
+  std::vector<uint8_t> wire(PageFlipPacket::SYNC_ANSWER_BYTES);
+  size_t length = 0;
+  ASSERT_TRUE(PageFlipPacket::encodeSyncAnswer(answer, wire.data(), wire.size(), length));
+  wire[17] = 0x7F;  // a result code this build does not know
+
+  PageFlipSyncAnswer received;
+  ASSERT_TRUE(PageFlipPacket::decodeSyncAnswer(wire.data(), wire.size(), received));
+  EXPECT_EQ(received.result, PageFlipSyncResult::Unknown);
+}
+
+TEST(PageFlipPacket, SyncMessagesRejectTruncationAndForeignTraffic) {
+  const std::vector<uint8_t> wire = encodedOffer(sampleOffer());
+  for (size_t length = 0; length < wire.size(); ++length) {
+    PageFlipSyncOffer received;
+    EXPECT_FALSE(PageFlipPacket::decodeSyncOffer(wire.data(), length, received))
+        << "accepted a " << length << "-byte offer";
+  }
+
+  // Each decoder must reject the other two messages, or a commit could be parsed out of an offer.
+  PageFlipSyncAnswer asAnswer;
+  EXPECT_FALSE(PageFlipPacket::decodeSyncAnswer(wire.data(), wire.size(), asAnswer));
+  PageFlipSyncApply asApply;
+  EXPECT_FALSE(PageFlipPacket::decodeSyncApply(wire.data(), wire.size(), asApply));
+  PageFlipTurn asTurn;
+  EXPECT_FALSE(PageFlipPacket::decodeTurn(wire.data(), wire.size(), asTurn));
+}
+
+// Same contract as the turn: these bytes are what the other device parses, so pin them.
+TEST(PageFlipPacket, SyncOfferWireLayoutIsPinned) {
+  PageFlipSyncOffer offer;
+  offer.compatHash = 0x11223344u;
+  offer.bookId = 0x55667788u;
+  offer.role = PageFlipRole::Right;
+  offer.settings.fontId = -2;
+  offer.settings.viewportWidth = 0x0102;
+  offer.settings.viewportHeight = 0x0304;
+  offer.settings.fontFamily = 1;
+  offer.settings.fontPointSize = 16;
+  offer.settings.lineSpacing = 2;
+  offer.settings.paragraphAlignment = 3;
+  offer.settings.screenMargin = 20;
+  offer.settings.imageRendering = 1;
+  offer.settings.extraParagraphSpacing = 1;
+  offer.settings.hyphenationEnabled = 0;
+  offer.settings.embeddedStyle = 1;
+  offer.settings.focusReadingEnabled = 0;
+  std::snprintf(offer.settings.sdFontFamilyName, sizeof(offer.settings.sdFontFamilyName), "Ab");
+
+  const std::vector<uint8_t> wire = encodedOffer(offer);
+  const std::vector<uint8_t> expected = {
+      0x50, 0x46,              // magic 'PF', little-endian
+      0x01,                    // protocol version
+      0x03,                    // message: SyncOffer
+      0x01,                    // flags: right
+      0x44, 0x33, 0x22, 0x11,  // compatHash (the layout the peer must reach)
+      0x88, 0x77, 0x66, 0x55,  // bookId
+      0xFE, 0xFF, 0xFF, 0xFF,  // fontId -2
+      0x02, 0x01,              // viewportWidth
+      0x04, 0x03,              // viewportHeight
+      0x01,                    // fontFamily
+      0x10,                    // fontPointSize 16
+      0x02,                    // lineSpacing
+      0x03,                    // paragraphAlignment
+      0x14,                    // screenMargin 20
+      0x01,                    // imageRendering
+      0x01,                    // extraParagraphSpacing
+      0x00,                    // hyphenationEnabled
+      0x01,                    // embeddedStyle
+      0x00,                    // focusReadingEnabled
+      0x02,                    // font name length
+      'A',  'b',               // font name, no terminator on the wire
+  };
+  EXPECT_EQ(wire, expected);
+}
+
 TEST(PageFlipPacket, PeekMessageDispatchesBeforeDecoding) {
   const std::vector<uint8_t> wire = encoded(sampleTurn());
   PageFlipMessage message = PageFlipMessage::Hello;
   ASSERT_TRUE(PageFlipPacket::peekMessage(wire.data(), wire.size(), message));
   EXPECT_EQ(message, PageFlipMessage::Turn);
+
+  const std::vector<uint8_t> offerWire = encodedOffer(sampleOffer());
+  ASSERT_TRUE(PageFlipPacket::peekMessage(offerWire.data(), offerWire.size(), message));
+  EXPECT_EQ(message, PageFlipMessage::SyncOffer);
 
   // A header alone is enough to dispatch on.
   EXPECT_TRUE(PageFlipPacket::peekMessage(wire.data(), 4, message));

@@ -20,7 +20,13 @@ class PageFlipTransport {
   static constexpr size_t MAC_BYTES = 6;
   // Largest datagram any implementation must carry. PageFlip packets are tens of bytes; this
   // leaves room for the join exchange without inviting anything framebuffer-sized.
-  static constexpr size_t MAX_PAYLOAD_BYTES = 64;
+  //
+  // The settings offer of section 5.1 is the largest at 63 bytes with a full-length font name, so
+  // the headroom above it is deliberate: the decoders tolerate trailing bytes precisely so a later
+  // version can append fields, and a cap that only just fits today's worst case would make that
+  // impossible. Oversized datagrams are dropped whole rather than truncated, so an undersized cap
+  // does not present as an error -- it presents as a peer that never answers.
+  static constexpr size_t MAX_PAYLOAD_BYTES = 96;
 
   virtual ~PageFlipTransport() = default;
 
