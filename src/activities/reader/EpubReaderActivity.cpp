@@ -462,6 +462,14 @@ void EpubReaderActivity::loop() {
     pendingReadFolderMove = false;
   }
 
+#ifdef FREEINK_CAP_PAGEFLIP
+  // The force-sync prompt owns input while it is up (section 5.1). Ahead of every other handler
+  // because Confirm normally opens the reader menu, and here it answers a question this device
+  // asked -- and because a page turn applied mid-exchange would land on a layout about to be
+  // rebuilt. Placed after the build and prewarm work above so a rebuild in flight keeps running.
+  if (pageflipSyncState != PageFlipSyncState::None && pageflipHandleSyncInput()) return;
+#endif
+
   const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
 
   if (automaticPageTurnActive) {
@@ -1179,9 +1187,12 @@ void EpubReaderActivity::pageflipEnd() {
   pageflipPeerPresent = false;
   pageflipCompatHash = 0;
   pageflipCompatMismatch = false;
-  pendingPageflipMismatch = false;
   pageflipOweHelloAnswer = false;
   pageflipMismatchSinceMs = 0;
+  pageflipSyncState = PageFlipSyncState::None;
+  pendingPageflipSyncNotice = false;
+  pageflipSyncStateSinceMs = 0;
+  pageflipSyncMessage[0] = '\0';
 }
 
 bool EpubReaderActivity::pageflipSettledPage(int& page) {
@@ -1255,13 +1266,28 @@ void EpubReaderActivity::pageflipPump() {
   // using, and this is also where the very first greeting goes out.
   pageflipRefreshCompat();
 
-  // A mismatch that outlived its settling window is a real one, so tell the user. Driven from here
-  // rather than from the receive path because a permanent mismatch produces no further packets to
-  // hang the check on -- the peer only re-greets when its own hash changes.
+  // A mismatch that outlived its settling window is a real one, so offer the repair. Driven from
+  // here rather than from the receive path because a permanent mismatch produces no further packets
+  // to hang the check on -- the peer only re-greets when its own hash changes.
+  //
+  // The prompt IS the notice (section 5.1): reporting a mismatch with no way to fix it reads as the
+  // feature being broken. Both devices reach this point, which is what makes the confirm gesture a
+  // choice of source rather than a request that only one user can grant.
   if (pageflipMismatchSinceMs != 0 && millis() - pageflipMismatchSinceMs >= MISMATCH_CONFIRM_MS) {
     pageflipMismatchSinceMs = 0;
-    pendingPageflipMismatch = true;
-    requestUpdate();
+    if (pageflipSyncState == PageFlipSyncState::None) pageflipSetSyncState(PageFlipSyncState::Asking);
+  }
+
+  // A peer that stopped answering must not leave the exchange up forever. Nothing has been written
+  // on either device at this point, which is exactly what makes giving up safe.
+  if (pageflipSyncState == PageFlipSyncState::Offering &&
+      millis() - pageflipSyncStateSinceMs >= SYNC_ANSWER_TIMEOUT_MS) {
+    pageflip->cancelSync();
+    snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_SYNC_NO_REPLY));
+    pageflipSetSyncState(PageFlipSyncState::Reporting);
+  }
+  if (pageflipSyncState == PageFlipSyncState::Reporting && millis() - pageflipSyncStateSinceMs >= SYNC_REPORT_MS) {
+    pageflipSetSyncState(PageFlipSyncState::None);
   }
 
   // Owed steps first: they are what a boundary crossing left behind, and the announce below must
@@ -1295,6 +1321,25 @@ void EpubReaderActivity::pageflipPump() {
   // neither holds this device awake nor counts as presence.
   if (decision.action == PageFlipAction::Mismatch) {
     pageflipReportMismatch(decision);
+    return;
+  }
+
+  // Force-sync traffic (section 5.1) is peer contact -- it keeps both devices awake for as long as
+  // the exchange runs -- but it proves nothing about the layout, so it must not set presence or
+  // clear the mismatch latch. Both of those follow from the greeting that goes out once an apply has
+  // actually changed this device's hash.
+  if (decision.action == PageFlipAction::SettingsOffer || decision.action == PageFlipAction::SettingsAnswer ||
+      decision.action == PageFlipAction::SettingsApply) {
+    lastPeerContactMs = millis();
+    if (decision.action == PageFlipAction::SettingsAnswer) {
+      pageflipHandleSyncAnswer(decision);
+    } else if (decision.settings != nullptr) {
+      if (decision.action == PageFlipAction::SettingsOffer) {
+        pageflipAnswerOffer(*decision.settings);
+      } else {
+        pageflipApplySettings(*decision.settings);
+      }
+    }
     return;
   }
 
@@ -1345,9 +1390,146 @@ void EpubReaderActivity::pageflipPump() {
       break;
     case PageFlipAction::Mismatch:
       break;  // returned above, before this device counted the peer as present
+    case PageFlipAction::SettingsOffer:
+    case PageFlipAction::SettingsAnswer:
+    case PageFlipAction::SettingsApply:
+      break;  // returned above, for the same reason: an exchange is contact, not agreement
     case PageFlipAction::Ignore:
       break;
   }
+}
+
+void EpubReaderActivity::pageflipSetSyncState(const PageFlipSyncState state) {
+  if (pageflipSyncState == state) return;
+  pageflipSyncState = state;
+  pageflipSyncStateSinceMs = millis();
+  // None is not a notice, it is the absence of one -- but the popup still has to be painted over,
+  // so the page is redrawn either way.
+  pendingPageflipSyncNotice = state != PageFlipSyncState::None;
+  requestUpdate();
+}
+
+bool EpubReaderActivity::pageflipHandleSyncInput() {
+  const bool confirmed = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+  const bool dismissed = mappedInput.wasReleased(MappedInputManager::Button::Back);
+
+  switch (pageflipSyncState) {
+    case PageFlipSyncState::Asking:
+      if (confirmed) {
+        // The interaction is the choice: confirming here says "these are the pair's settings".
+        const bool sent = pageflip && buildViewportWidth > 0 &&
+                          pageflip->offerSettings(PageFlipSettingsSync::collect(buildViewportWidth, buildViewportHeight));
+        if (sent) {
+          pageflipSetSyncState(PageFlipSyncState::Offering);
+        } else {
+          snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_SYNC_FAILED));
+          pageflipSetSyncState(PageFlipSyncState::Reporting);
+        }
+      } else if (dismissed) {
+        pageflipSetSyncState(PageFlipSyncState::None);
+      }
+      // Held either way: the prompt is a question this device asked, so a press answers it rather
+      // than opening the menu or turning a page underneath it.
+      return true;
+
+    case PageFlipSyncState::Offering:
+      return true;  // an exchange is in flight; a page turn now would be applied to a dead layout
+
+    case PageFlipSyncState::Reporting:
+      if (confirmed || dismissed) pageflipSetSyncState(PageFlipSyncState::None);
+      return true;
+
+    case PageFlipSyncState::None:
+      return false;
+  }
+  return false;
+}
+
+void EpubReaderActivity::pageflipAnswerOffer(const PageFlipRenderSettings& offer) {
+  // The other user confirmed first, so the choice of source is settled: this device's own prompt
+  // goes away rather than inviting a second push back in the other direction.
+  if (pageflipSyncState == PageFlipSyncState::Asking) pageflipSetSyncState(PageFlipSyncState::None);
+
+  const PageFlipSettingsSync::Preflight verdict = PageFlipSettingsSync::preflight(
+      offer, sdFontSystem.registry(), renderer, automaticPageTurnActive, pageflipBookId);
+  LOG_INF("ERS", "PageFlip settings preflight: verdict %u, would hash %08X",
+          static_cast<unsigned>(verdict.result), static_cast<unsigned>(verdict.resultHash));
+  pageflip->answerOffer(verdict.result, verdict.resultHash);
+}
+
+void EpubReaderActivity::pageflipHandleSyncAnswer(const PageFlipDecision& decision) {
+  if (decision.syncResult == PageFlipSyncResult::Ok) {
+    // Only now does anything get written, and only on the peer -- this device already has these
+    // settings. The commit is what turns the preflight into a change.
+    pageflip->commitOffer();
+    snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_SYNC_DONE));
+    pageflipSetSyncState(PageFlipSyncState::Reporting);
+    return;
+  }
+
+  // An abort has to name the thing to go and fix, and the device to fix it on -- "settings could
+  // not be matched" is a statement that something went wrong, not something the user can act on.
+  const char* peer =
+      decision.peerRole == PageFlipRole::Right ? tr(STR_PAGEFLIP_DEVICE_RIGHT) : tr(STR_PAGEFLIP_DEVICE_LEFT);
+  // Both font verdicts print the SD family by name. A built-in font has no name to print, and two
+  // built-in fonts only resolve differently across firmware builds -- which is the generic case.
+  PageFlipSyncResult reported = decision.syncResult;
+  if (SETTINGS.sdFontFamilyName[0] == '\0' &&
+      (reported == PageFlipSyncResult::MissingFont || reported == PageFlipSyncResult::FontDiffers)) {
+    reported = PageFlipSyncResult::Unknown;
+  }
+  switch (reported) {
+    case PageFlipSyncResult::MissingFont:
+      snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), tr(STR_PAGEFLIP_SYNC_MISSING_FONT),
+               SETTINGS.sdFontFamilyName, peer);
+      break;
+    case PageFlipSyncResult::FontDiffers:
+      snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), tr(STR_PAGEFLIP_SYNC_FONT_DIFFERS), peer,
+               SETTINGS.sdFontFamilyName);
+      break;
+    case PageFlipSyncResult::ScreenDiffers:
+      snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_SYNC_SCREEN_DIFFERS));
+      break;
+    case PageFlipSyncResult::Ok:
+    case PageFlipSyncResult::Unknown:
+      snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_SYNC_FAILED));
+      break;
+  }
+  LOG_ERR("ERS", "PageFlip force-sync refused: %s", pageflipSyncMessage);
+  pageflipSetSyncState(PageFlipSyncState::Reporting);
+}
+
+void EpubReaderActivity::pageflipApplySettings(const PageFlipRenderSettings& offer) {
+  if (!PageFlipSettingsSync::apply(offer)) {
+    // The pair already agreed on every synced field, so the difference is in something force-sync
+    // does not push. Nothing written, no SPIFFS erase cycle, and no rebuild.
+    snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_SYNC_SCREEN_DIFFERS));
+    pageflipSetSyncState(PageFlipSyncState::Reporting);
+    return;
+  }
+
+  {
+    // Same care as a text-settings change: ensureLoaded() frees the resident SD font that the render
+    // task may be walking, and the section must not be dropped mid-render.
+    RenderLock lock(*this);
+    sdFontSystem.ensureLoaded(renderer);
+    if (section) {
+      // The page number is about to stop meaning anything -- the layout it counted is being thrown
+      // away -- so the position is carried as a content offset and re-derived after the rebuild.
+      rememberCurrentContentOffset();
+      cachedSpineIndex = currentSpineIndex;
+      cachedChapterTotalPageCount = section->pageCount;
+      nextPageNumber = section->currentPage;
+    }
+    section.reset();
+  }
+  // Outside the lock, like TextSettingsActivity: the SD write must not stall the render task.
+  SETTINGS.saveToFile();
+
+  LOG_INF("ERS", "PageFlip applied the pair's settings; rebuilding layout");
+  snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_SYNC_DONE));
+  // The rebuild's own indexing popup covers the wait; this lands once the page is back.
+  pageflipSetSyncState(PageFlipSyncState::Reporting);
 }
 #endif
 
@@ -1366,9 +1548,15 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       return;
     }
 #ifdef FREEINK_CAP_PAGEFLIP
-    if (pendingPageflipMismatch) {
-      pendingPageflipMismatch = false;
-      GUI.drawPopup(renderer, tr(STR_PAGEFLIP_LAYOUT_MISMATCH));
+    if (pendingPageflipSyncNotice) {
+      pendingPageflipSyncNotice = false;
+      // Asking and Reporting are the only states with something to say. Offering is a wait, and the
+      // wait that matters -- the layout rebuild after an apply -- already has the indexing popup.
+      if (pageflipSyncState == PageFlipSyncState::Asking) {
+        GUI.drawPopup(renderer, tr(STR_PAGEFLIP_SYNC_ASK));
+      } else if (pageflipSyncState == PageFlipSyncState::Reporting) {
+        GUI.drawPopup(renderer, pageflipSyncMessage);
+      }
     }
 #endif
   };
@@ -1404,28 +1592,16 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     return;
   }
 
-  // Apply screen viewable areas and additional padding
-  int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
-  renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
-                                   &orientedMarginLeft);
-  orientedMarginTop += SETTINGS.screenMargin;
-  orientedMarginLeft += SETTINGS.screenMargin;
-  orientedMarginRight += SETTINGS.screenMargin;
-
-  const uint8_t statusBarHeight = UITheme::getInstance().getStatusBarHeight();
-
-  // reserves space for automatic page turn indicator when no status bar or progress bar only
-  if (automaticPageTurnActive &&
-      (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
-    orientedMarginBottom +=
-        std::max(SETTINGS.screenMargin,
-                 static_cast<uint8_t>(statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin));
-  } else {
-    orientedMarginBottom += std::max(SETTINGS.screenMargin, statusBarHeight);
-  }
-
-  const uint16_t viewportWidth = renderer.getScreenWidth() - orientedMarginLeft - orientedMarginRight;
-  const uint16_t viewportHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
+  // Apply screen viewable areas and additional padding. Shared with PageFlip's settings preflight,
+  // which asks the same question about a margin this device has not adopted yet (section 5.1).
+  const ReaderUtils::ReaderLayoutBox layoutBox =
+      ReaderUtils::readerLayoutBox(renderer, SETTINGS.screenMargin, automaticPageTurnActive);
+  const int orientedMarginTop = layoutBox.marginTop;
+  const int orientedMarginRight = layoutBox.marginRight;
+  const int orientedMarginBottom = layoutBox.marginBottom;
+  const int orientedMarginLeft = layoutBox.marginLeft;
+  const uint16_t viewportWidth = layoutBox.viewportWidth;
+  const uint16_t viewportHeight = layoutBox.viewportHeight;
   // Capture for loop()'s lazy partial-extension start (must match this render's layout params).
   buildViewportWidth = viewportWidth;
   buildViewportHeight = viewportHeight;

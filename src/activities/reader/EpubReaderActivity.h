@@ -9,6 +9,8 @@
 #include <PageFlipCompat.h>
 #include <PageFlipSession.h>
 #include <PageFlipTransportFactory.h>
+
+#include "PageFlipSettingsSync.h"
 #endif
 
 #include "BookmarkEntry.h"
@@ -95,6 +97,32 @@ class EpubReaderActivity final : public Activity {
   // A device being read from but not pressed sees no input of its own, so peer traffic has to keep
   // it awake. Only decoded packets from a compatible peer count -- see the receive path.
   static constexpr unsigned long PEER_ACTIVITY_WINDOW_MS = 3000;
+
+  // The settings force-sync (docs/pageflip.md section 5.1). Detecting a mismatch without a way to
+  // fix it reads as "the feature is broken", so a confirmed mismatch offers the repair.
+  //
+  // The gesture is section 4.3's: both devices ask, and confirming on one makes THAT device the
+  // source. The interaction is the choice -- there is no list of two positions to read, and it
+  // works the same whichever device you happen to be holding.
+  enum class PageFlipSyncState : uint8_t {
+    None,
+    Asking,     // prompt up on this device: Confirm pushes ours, Back dismisses
+    Offering,   // our settings are out, waiting on the peer's preflight
+    Applying,   // the peer's settings are being written and the layout rebuilt here
+    Reporting,  // an outcome is on screen: matched, or why it could not be
+  };
+  PageFlipSyncState pageflipSyncState = PageFlipSyncState::None;
+  // Set when the state changes, so render() draws the new state once rather than every frame.
+  bool pendingPageflipSyncNotice = false;
+  // The outcome text, built once when the answer lands: it names the font and the device, which is
+  // what makes it something the user can act on rather than a statement that something went wrong.
+  char pageflipSyncMessage[96] = "";
+  unsigned long pageflipSyncStateSinceMs = 0;
+  // A peer that stops answering must not leave the prompt up forever -- it powered off, or walked
+  // out of range, and either way nothing has been written on either device.
+  static constexpr unsigned long SYNC_ANSWER_TIMEOUT_MS = 6000;
+  // How long an outcome stays on screen before the page comes back.
+  static constexpr unsigned long SYNC_REPORT_MS = 4000;
 #endif
   bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
   bool automaticPageTurnActive = false;
@@ -267,6 +295,17 @@ class EpubReaderActivity final : public Activity {
   // Drops back to solo reading and arms the notice. A peer that cannot apply our turns must not
   // gate the two-step advance.
   void pageflipReportMismatch(const PageFlipDecision& decision);
+  // Force-sync (section 5.1). The prompt owns Confirm and Back while it is up; returns true when it
+  // consumed the input, so the reader menu does not also open behind it.
+  bool pageflipHandleSyncInput();
+  void pageflipSetSyncState(PageFlipSyncState state);
+  // Preflights a peer's offer against this device and answers it. Writes nothing.
+  void pageflipAnswerOffer(const PageFlipRenderSettings& offer);
+  // Commits on Ok, and on anything else builds the sentence that says which device needs what.
+  void pageflipHandleSyncAnswer(const PageFlipDecision& decision);
+  // Writes the peer's settings, reloads fonts and rebuilds the layout, re-anchored on the content
+  // offset -- the saved page number belongs to a layout that no longer exists.
+  void pageflipApplySettings(const PageFlipRenderSettings& offer);
 #endif
   void loadCachedBookmarks();
   void addBookmark();
