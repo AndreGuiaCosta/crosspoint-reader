@@ -1078,4 +1078,41 @@ TEST_F(PageFlipSessionTest, PairingWithAnotherDeviceRestartsTheJoin) {
   EXPECT_FALSE(resolution.resolved);
 }
 
+// The reader re-reads the setting every pump, so setPeerMac() is called with the SAME value on
+// every frame. If that restarted the round, no join would ever survive long enough to be answered
+// and the pair would never classify at all -- a dead feature with nothing on screen to say so. The
+// unpaired case matters just as much: it is the one every solo device takes, forever.
+TEST_F(PageFlipSessionTest, ReapplyingTheSameSettingIsANoOp) {
+  Room room;
+  ASSERT_TRUE(room.start());
+  ASSERT_TRUE(room.pairLeftToRight());
+
+  ASSERT_TRUE(room.right.announceHello(2, 0, 400));
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(room.left, decision));
+  ASSERT_EQ(decision.action, PageFlipAction::PeerHello);
+  ASSERT_TRUE(decision.joinProbe);
+
+  // What a handful of pumps between the probe and its answer would do.
+  for (int pump = 0; pump < 5; ++pump) ASSERT_TRUE(room.pairLeftToRight());
+
+  PageFlipJoinResolution resolution;
+  EXPECT_TRUE(room.left.answerJoin(decision.joinRound, PageFlipJoinVerdict::Adjacent, 2, 0, 400, resolution));
+}
+
+TEST_F(PageFlipSessionTest, ReapplyingNoPairedDeviceIsANoOp) {
+  Room room;
+  ASSERT_TRUE(room.start());
+
+  ASSERT_TRUE(room.right.announceHello(2, 0, 400));
+  PageFlipDecision decision;
+  ASSERT_TRUE(pollWithRetry(room.left, decision));
+  ASSERT_TRUE(decision.joinProbe);
+
+  for (int pump = 0; pump < 5; ++pump) room.left.setPeerMac(nullptr);
+
+  PageFlipJoinResolution resolution;
+  EXPECT_TRUE(room.left.answerJoin(decision.joinRound, PageFlipJoinVerdict::Adjacent, 2, 0, 400, resolution));
+}
+
 }  // namespace
