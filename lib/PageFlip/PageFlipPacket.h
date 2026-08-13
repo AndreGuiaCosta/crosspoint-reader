@@ -22,6 +22,23 @@ enum class PageFlipRole : uint8_t {
   Right = 1,
 };
 
+// The join negotiation (section 4.2), as one device's half of it: the answer to "does my next page
+// start at the offset you just told me?". Neither device can test the other direction -- that would
+// mean loading a section it does not have -- so the classification is these two answers combined.
+//
+// Rides in two bits of the hello's flags rather than a byte of its own, because the whole point of
+// putting it on the greeting is that the join costs no extra packet.
+enum class PageFlipJoinVerdict : uint8_t {
+  // Not answerable yet, and the honest value to send: the section is still building, so "am I on my
+  // last page" has no answer (section 3 -- pageCount is a watermark during a build), or no position
+  // has been heard from the peer at all. Retried, never treated as a "no".
+  Unknown = 0,
+  // My next page begins exactly where you are. You are one page after me.
+  Adjacent = 1,
+  // My next page is somewhere else. Says nothing about which of us is ahead.
+  NotAdjacent = 2,
+};
+
 // Discriminates the packets that share the transport.
 enum class PageFlipMessage : uint8_t {
   Turn = 1,
@@ -46,22 +63,30 @@ struct PageFlipTurn {
   bool atBookEnd = false;
 };
 
-// A presence greeting. Same 25 bytes as a turn -- only `message` and the meaning of one flag
-// differ -- because a device has to answer the same questions either way: who am I, what am I
-// reading, and how far along is the pair's turn counter.
+// A presence greeting, and the carrier of the join negotiation (section 4.2). A turn's 25 bytes
+// plus the content offset and this device's verdict -- because a device has to answer the same
+// questions either way: who am I, what am I reading, how far along is the pair's turn counter, and
+// where in the text am I.
 //
 // Presence is not optional politeness: "the link came up" is not "a peer is there", and a device
 // that advanced by two without a peer would turn two pages per press on its own.
 struct PageFlipHello {
   uint32_t compatHash = 0;
   uint32_t bookId = 0;
-  uint32_t turnSeq = 0;   // the join adopts max(local, peer) from this
-  int32_t spineIndex = 0; // where this device currently is
+  uint32_t turnSeq = 0;    // the join adopts max(local, peer) from this
+  int32_t spineIndex = 0;  // where this device currently is
   int32_t pageNumber = 0;
+  // The join's anchor. A page number is not comparable across two devices -- a force-sync (section
+  // 5.1) invalidates the layout the receiving device's own saved page number was counted in -- so
+  // the negotiation compares content offsets and nothing else. `pageNumber` above stays for the
+  // heal path of section 3, which only ever runs between devices already proven to share a layout.
+  uint32_t visibleTextOffset = 0;
   PageFlipRole role = PageFlipRole::Left;
   // A greeting asks for an answer; an answer does not, which is what stops two devices greeting
   // each other forever. Rides the same flag bit a turn uses for direction.
   bool wantsReply = true;
+  // What this device made of the last position it heard from the peer.
+  PageFlipJoinVerdict joinVerdict = PageFlipJoinVerdict::Unknown;
 };
 
 // A push of one device's render settings onto the other (section 5.1). Sent by the device the user
@@ -99,6 +124,10 @@ inline constexpr uint8_t PROTOCOL_VERSION = 1;
 // magic(2) + version(1) + message(1) + flags(1) + compatHash(4) + bookId(4) + turnSeq(4)
 // + spineIndex(4) + pageNumber(4)
 inline constexpr size_t TURN_BYTES = 25;
+// A hello is a turn's 25 bytes plus the join's content offset (section 4.2). The extra field is
+// appended rather than inserted, so every shared offset stays where a turn's is and one set of
+// constants still serves both.
+inline constexpr size_t HELLO_BYTES = TURN_BYTES + 4;
 // The sync messages: header(5) + the fields listed on each encoder below. The offer is variable
 // length because the font name is length-prefixed -- a built-in family sends no name at all, and
 // the worst case is still well inside PageFlipTransport::MAX_PAYLOAD_BYTES.
@@ -116,7 +145,7 @@ bool encodeTurn(const PageFlipTurn& turn, uint8_t* output, size_t capacity, size
 // untouched on rejection.
 bool decodeTurn(const uint8_t* data, size_t length, PageFlipTurn& turn);
 
-// Same wire layout as a turn, so both share one set of field offsets.
+// A turn's wire layout with the join's offset appended, so both share one set of field offsets.
 bool encodeHello(const PageFlipHello& hello, uint8_t* output, size_t capacity, size_t& outputLength);
 bool decodeHello(const uint8_t* data, size_t length, PageFlipHello& hello);
 

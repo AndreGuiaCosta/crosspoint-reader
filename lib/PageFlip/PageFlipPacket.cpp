@@ -14,6 +14,9 @@ constexpr size_t OFF_BOOK_ID = 9;
 constexpr size_t OFF_TURN_SEQ = 13;
 constexpr size_t OFF_SPINE_INDEX = 17;
 constexpr size_t OFF_PAGE_NUMBER = 21;
+// Hello only, appended past a turn's last field (section 4.2). Appended rather than inserted so
+// encodeCommon still writes both messages from one set of offsets.
+constexpr size_t OFF_HELLO_VISIBLE_OFFSET = 25;
 
 // Sync offer field offsets (section 5.1). The first two fields sit where a turn's do, so the
 // header plus hash plus book id is one shape across every message.
@@ -45,6 +48,9 @@ constexpr size_t HEADER_BYTES = 4;
 constexpr uint8_t FLAG_ROLE_RIGHT = 1 << 0;
 constexpr uint8_t FLAG_BACKWARD = 1 << 1;
 constexpr uint8_t FLAG_AT_BOOK_END = 1 << 2;
+// Hello only: the join verdict (section 4.2), two bits wide, in the bits a turn does not use.
+constexpr uint8_t JOIN_VERDICT_SHIFT = 3;
+constexpr uint8_t JOIN_VERDICT_MASK = 0b11 << JOIN_VERDICT_SHIFT;
 
 // Explicit little-endian, byte at a time: the wire layout must not inherit the host's endianness,
 // and a memcpy of a wider type would.
@@ -122,6 +128,22 @@ void writeSyncHeader(uint8_t* output, PageFlipMessage message, PageFlipRole role
 // A result code this build does not know is not a decode failure: rejecting the packet would leave
 // the sender waiting forever for an answer it already sent. Anything unrecognised is "not Ok",
 // which is the safe reading -- only an explicit Ok may commit.
+// Same tolerance, same reason: the field is two bits and one of its four values is unassigned, so a
+// later version can add one without this build rejecting the greeting that carries it. Unknown is
+// the safe reading -- it is "retry", never "no", so an unrecognised verdict cannot classify a pair
+// as divergent and put a resume prompt in front of the user.
+PageFlipJoinVerdict toJoinVerdict(uint8_t raw) {
+  switch (static_cast<PageFlipJoinVerdict>(raw)) {
+    case PageFlipJoinVerdict::Adjacent:
+      return PageFlipJoinVerdict::Adjacent;
+    case PageFlipJoinVerdict::NotAdjacent:
+      return PageFlipJoinVerdict::NotAdjacent;
+    case PageFlipJoinVerdict::Unknown:
+      break;
+  }
+  return PageFlipJoinVerdict::Unknown;
+}
+
 PageFlipSyncResult toSyncResult(uint8_t raw) {
   switch (static_cast<PageFlipSyncResult>(raw)) {
     case PageFlipSyncResult::Ok:
@@ -152,28 +174,41 @@ bool encodeTurn(const PageFlipTurn& turn, uint8_t* output, size_t capacity, size
 }
 
 bool encodeHello(const PageFlipHello& hello, uint8_t* output, size_t capacity, size_t& outputLength) {
+  // Checked here as well as in encodeCommon: a hello is longer than the turn that writer sizes for,
+  // and a buffer big enough for one is not big enough for the other.
+  if (output == nullptr || capacity < HELLO_BYTES) return false;
+
   uint8_t flags = 0;
   if (hello.role == PageFlipRole::Right) flags |= FLAG_ROLE_RIGHT;
   // The direction bit reads as "this is an answer" on a hello: a greeting sets wantsReply, so the
   // bit is clear, and the answer sets the bit and is never answered in turn.
   if (!hello.wantsReply) flags |= FLAG_BACKWARD;
-  return encodeCommon(output, capacity, outputLength, PageFlipMessage::Hello, flags, hello.compatHash, hello.bookId,
-                      hello.turnSeq, hello.spineIndex, hello.pageNumber);
+  flags |= static_cast<uint8_t>(static_cast<uint8_t>(hello.joinVerdict) << JOIN_VERDICT_SHIFT) & JOIN_VERDICT_MASK;
+
+  if (!encodeCommon(output, capacity, outputLength, PageFlipMessage::Hello, flags, hello.compatHash, hello.bookId,
+                    hello.turnSeq, hello.spineIndex, hello.pageNumber)) {
+    return false;
+  }
+  writeU32(output + OFF_HELLO_VISIBLE_OFFSET, hello.visibleTextOffset);
+  outputLength = HELLO_BYTES;
+  return true;
 }
 
 bool decodeHello(const uint8_t* data, size_t length, PageFlipHello& hello) {
   if (!hasPageFlipHeader(data, length)) return false;
   if (data[OFF_MESSAGE] != static_cast<uint8_t>(PageFlipMessage::Hello)) return false;
-  if (length < TURN_BYTES) return false;
+  if (length < HELLO_BYTES) return false;
 
   const uint8_t flags = data[OFF_FLAGS];
   hello.role = (flags & FLAG_ROLE_RIGHT) ? PageFlipRole::Right : PageFlipRole::Left;
   hello.wantsReply = (flags & FLAG_BACKWARD) == 0;
+  hello.joinVerdict = toJoinVerdict(static_cast<uint8_t>((flags & JOIN_VERDICT_MASK) >> JOIN_VERDICT_SHIFT));
   hello.compatHash = readU32(data + OFF_COMPAT_HASH);
   hello.bookId = readU32(data + OFF_BOOK_ID);
   hello.turnSeq = readU32(data + OFF_TURN_SEQ);
   hello.spineIndex = readI32(data + OFF_SPINE_INDEX);
   hello.pageNumber = readI32(data + OFF_PAGE_NUMBER);
+  hello.visibleTextOffset = readU32(data + OFF_HELLO_VISIBLE_OFFSET);
   return true;
 }
 

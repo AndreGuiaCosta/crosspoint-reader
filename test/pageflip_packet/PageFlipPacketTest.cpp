@@ -163,6 +163,154 @@ TEST(PageFlipPacket, DecodeToleratesTrailingBytes) {
   EXPECT_EQ(received.turnSeq, sampleTurn().turnSeq);
 }
 
+// --- the greeting, which also carries the join negotiation (docs/pageflip.md section 4.2) ---
+
+PageFlipHello sampleHello() {
+  PageFlipHello hello;
+  hello.compatHash = 0x0BADF00Du;
+  hello.bookId = 0x01020304u;
+  hello.turnSeq = 847u;
+  hello.spineIndex = 7;
+  hello.pageNumber = 3;
+  hello.visibleTextOffset = 123456u;
+  hello.role = PageFlipRole::Left;
+  hello.wantsReply = true;
+  hello.joinVerdict = PageFlipJoinVerdict::NotAdjacent;
+  return hello;
+}
+
+std::vector<uint8_t> encoded(const PageFlipHello& hello) {
+  std::vector<uint8_t> buffer(PageFlipPacket::HELLO_BYTES);
+  size_t length = 0;
+  EXPECT_TRUE(PageFlipPacket::encodeHello(hello, buffer.data(), buffer.size(), length));
+  EXPECT_EQ(length, PageFlipPacket::HELLO_BYTES);
+  return buffer;
+}
+
+TEST(PageFlipPacket, HelloRoundTripsEveryField) {
+  const PageFlipHello sent = sampleHello();
+  const std::vector<uint8_t> wire = encoded(sent);
+
+  PageFlipHello received;
+  ASSERT_TRUE(PageFlipPacket::decodeHello(wire.data(), wire.size(), received));
+  EXPECT_EQ(received.compatHash, sent.compatHash);
+  EXPECT_EQ(received.bookId, sent.bookId);
+  EXPECT_EQ(received.turnSeq, sent.turnSeq);
+  EXPECT_EQ(received.spineIndex, sent.spineIndex);
+  EXPECT_EQ(received.pageNumber, sent.pageNumber);
+  EXPECT_EQ(received.visibleTextOffset, sent.visibleTextOffset);
+  EXPECT_EQ(received.role, sent.role);
+  EXPECT_EQ(received.wantsReply, sent.wantsReply);
+  EXPECT_EQ(received.joinVerdict, sent.joinVerdict);
+}
+
+// The verdict shares the flags byte with the role and the reply bit, so the three must not bleed
+// into each other -- a verdict misread as a role would seat both devices as left.
+TEST(PageFlipPacket, HelloFlagsRoundTripInEveryCombination) {
+  for (const PageFlipRole role : {PageFlipRole::Left, PageFlipRole::Right}) {
+    for (const bool wantsReply : {false, true}) {
+      for (const PageFlipJoinVerdict verdict :
+           {PageFlipJoinVerdict::Unknown, PageFlipJoinVerdict::Adjacent, PageFlipJoinVerdict::NotAdjacent}) {
+        PageFlipHello sent = sampleHello();
+        sent.role = role;
+        sent.wantsReply = wantsReply;
+        sent.joinVerdict = verdict;
+        const std::vector<uint8_t> wire = encoded(sent);
+
+        PageFlipHello received;
+        ASSERT_TRUE(PageFlipPacket::decodeHello(wire.data(), wire.size(), received));
+        EXPECT_EQ(received.role, role);
+        EXPECT_EQ(received.wantsReply, wantsReply);
+        EXPECT_EQ(received.joinVerdict, verdict);
+      }
+    }
+  }
+}
+
+// The offset is the join's whole anchor, and it is a u32 that really does reach its top on a large
+// chapter -- a sign slip here would classify an ordinary pair as divergent.
+TEST(PageFlipPacket, HelloOffsetSurvivesItsFullRange) {
+  for (const uint32_t offset : {0u, 1u, 0x7FFFFFFFu, 0x80000000u, 0xFFFFFFFFu}) {
+    PageFlipHello sent = sampleHello();
+    sent.visibleTextOffset = offset;
+    const std::vector<uint8_t> wire = encoded(sent);
+
+    PageFlipHello received;
+    ASSERT_TRUE(PageFlipPacket::decodeHello(wire.data(), wire.size(), received));
+    EXPECT_EQ(received.visibleTextOffset, offset);
+  }
+}
+
+TEST(PageFlipPacket, HelloWireLayoutIsPinned) {
+  PageFlipHello sent;
+  sent.compatHash = 0x11223344u;
+  sent.bookId = 0x55667788u;
+  sent.turnSeq = 0x99AABBCCu;
+  sent.spineIndex = 1;
+  sent.pageNumber = -1;
+  sent.visibleTextOffset = 0x0000FEDCu;
+  sent.role = PageFlipRole::Right;
+  sent.wantsReply = false;
+  sent.joinVerdict = PageFlipJoinVerdict::NotAdjacent;
+
+  const std::vector<uint8_t> wire = encoded(sent);
+  const std::vector<uint8_t> expected = {
+      0x50, 0x46,              // magic 'PF', little-endian
+      0x01,                    // protocol version
+      0x02,                    // message: Hello
+      0x13,                    // flags: right | answer (the direction bit) | verdict NotAdjacent<<3
+      0x44, 0x33, 0x22, 0x11,  // compatHash
+      0x88, 0x77, 0x66, 0x55,  // bookId
+      0xCC, 0xBB, 0xAA, 0x99,  // turnSeq
+      0x01, 0x00, 0x00, 0x00,  // spineIndex 1
+      0xFF, 0xFF, 0xFF, 0xFF,  // pageNumber -1
+      0xDC, 0xFE, 0x00, 0x00,  // visibleTextOffset
+  };
+  EXPECT_EQ(wire, expected);
+}
+
+// A hello is longer than a turn, so a buffer sized for a turn is not one it may be written into --
+// the position and the verdict would both be missing, and the offset field would read as garbage
+// from whatever the caller's buffer held.
+TEST(PageFlipPacket, HelloEncodeRejectsATurnSizedBuffer) {
+  std::vector<uint8_t> buffer(PageFlipPacket::TURN_BYTES, 0xAA);
+  size_t length = 0;
+  EXPECT_FALSE(PageFlipPacket::encodeHello(sampleHello(), buffer.data(), buffer.size(), length));
+  EXPECT_EQ(buffer.front(), 0xAA);
+  EXPECT_EQ(buffer.back(), 0xAA);
+}
+
+TEST(PageFlipPacket, HelloDecodeRejectsTruncatedPacketAtEveryLength) {
+  const std::vector<uint8_t> wire = encoded(sampleHello());
+  for (size_t length = 0; length < wire.size(); ++length) {
+    PageFlipHello received;
+    EXPECT_FALSE(PageFlipPacket::decodeHello(wire.data(), length, received))
+        << "accepted a " << length << "-byte hello";
+  }
+}
+
+// A verdict this build has no name for is the fourth value of a two-bit field. Rejecting the
+// greeting would cost the pair its turnSeq adoption and its presence; reading it as Unknown costs
+// one retry.
+TEST(PageFlipPacket, HelloTreatsAnUnknownVerdictAsUnanswered) {
+  std::vector<uint8_t> wire = encoded(sampleHello());
+  wire[4] |= 0b11 << 3;
+
+  PageFlipHello received;
+  ASSERT_TRUE(PageFlipPacket::decodeHello(wire.data(), wire.size(), received));
+  EXPECT_EQ(received.joinVerdict, PageFlipJoinVerdict::Unknown);
+  EXPECT_EQ(received.visibleTextOffset, sampleHello().visibleTextOffset);
+}
+
+TEST(PageFlipPacket, HelloDecodeToleratesTrailingBytes) {
+  std::vector<uint8_t> wire = encoded(sampleHello());
+  wire.push_back(0xFF);
+
+  PageFlipHello received;
+  ASSERT_TRUE(PageFlipPacket::decodeHello(wire.data(), wire.size(), received));
+  EXPECT_EQ(received.visibleTextOffset, sampleHello().visibleTextOffset);
+}
+
 // --- settings force-sync (docs/pageflip.md section 5.1) ---
 
 PageFlipSyncOffer sampleOffer() {
