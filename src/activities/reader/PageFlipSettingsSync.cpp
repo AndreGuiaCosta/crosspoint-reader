@@ -56,16 +56,24 @@ Preflight preflight(const PageFlipRenderSettings& offer, const SdCardFontRegistr
                                                                        autoPageTurnActive);
 
   ReaderRenderSpec spec;
-  spec.fontId = candidateFontId;
-  spec.lineCompression = CrossPointSettings::readerLineCompressionFor(wantsSdFont, offer.fontFamily, offer.lineSpacing);
-  spec.extraParagraphSpacing = offer.extraParagraphSpacing != 0;
-  spec.paragraphAlignment = offer.paragraphAlignment;
-  spec.viewportWidth = box.viewportWidth;
-  spec.viewportHeight = box.viewportHeight;
-  spec.hyphenationEnabled = offer.hyphenationEnabled != 0;
-  spec.embeddedStyle = offer.embeddedStyle != 0;
-  spec.imageRendering = offer.imageRendering;
-  spec.focusReadingEnabled = offer.focusReadingEnabled != 0;
+  // Assembled through a structured binding for the same reason computePageFlipCompatHash() reads
+  // one: a binding must name every member, so an eleventh field added to ReaderRenderSpec stops
+  // compiling HERE too. This is the second place the struct gets filled by hand, and the guard over
+  // in PageFlipCompat.cpp cannot see it -- a field left at its default here would leave the
+  // would-be hash permanently unequal to the source's, aborting every force-sync with the generic
+  // "could not be matched" and nothing pointing at why.
+  auto& [fontId, lineCompression, extraParagraphSpacing, paragraphAlignment, viewportWidth, viewportHeight,
+         hyphenationEnabled, embeddedStyle, imageRendering, focusReadingEnabled] = spec;
+  fontId = candidateFontId;
+  lineCompression = CrossPointSettings::readerLineCompressionFor(wantsSdFont, offer.fontFamily, offer.lineSpacing);
+  extraParagraphSpacing = offer.extraParagraphSpacing != 0;
+  paragraphAlignment = offer.paragraphAlignment;
+  viewportWidth = box.viewportWidth;
+  viewportHeight = box.viewportHeight;
+  hyphenationEnabled = offer.hyphenationEnabled != 0;
+  embeddedStyle = offer.embeddedStyle != 0;
+  imageRendering = offer.imageRendering;
+  focusReadingEnabled = offer.focusReadingEnabled != 0;
 
   Preflight verdict;
   verdict.resultHash = computePageFlipCompatHash(spec, bookId, Section::FILE_VERSION);
