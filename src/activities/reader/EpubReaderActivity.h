@@ -135,6 +135,10 @@ class EpubReaderActivity final : public Activity {
   // Whether the user was told the peer had gone, so the pair coming back is worth a notice. Without
   // it, "paired device is back" would fire on every ordinary book open.
   bool pageflipPeerWasLost = false;
+  // Whether the link is being held down because WiFi has the radio (docs/pageflip.md section 6).
+  // Latched only so the notice is said once: the condition itself is re-tested every pump, which is
+  // what brings the link back when WiFi goes away.
+  bool pageflipWifiSuspended = false;
   // The last anchor looked up, so a heartbeat for a page the reader has not left costs nothing.
   // Resolving an offset reads the section file once the chapter has finalized, and at the heartbeat
   // rate that would be constant SD traffic for an answer that cannot have changed.
@@ -326,6 +330,10 @@ class EpubReaderActivity final : public Activity {
   // Which half of the spread this device is, from settings. Nothing can discover it -- only the
   // user knows which device they put on the left.
   static PageFlipRole pageflipConfiguredRole();
+  // Whether WiFi holds the radio (docs/pageflip.md section 6). Only ever asked with the link down:
+  // bringing it up puts the radio in WIFI_STA itself, so with the link up this answers "yes" about
+  // this device's own pair.
+  static bool pageflipWifiActive();
   // Whether the status bar should carry the "configured but alone" badge right now.
   bool pageflipBadgeDue() const;
   // Brings the link up or down and adopts a role change, per pump. Neither setting has a

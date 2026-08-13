@@ -9,6 +9,8 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+// The one radio PageFlip and WiFi have to share (docs/pageflip.md section 6).
+#include <WiFi.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -1157,8 +1159,14 @@ PageFlipRole EpubReaderActivity::pageflipConfiguredRole() {
   return SETTINGS.pageflipRole == CrossPointSettings::PAGEFLIP_ROLE_RIGHT ? PageFlipRole::Right : PageFlipRole::Left;
 }
 
+bool EpubReaderActivity::pageflipWifiActive() { return WiFi.getMode() != WIFI_MODE_NULL; }
+
 bool EpubReaderActivity::pageflipBadgeDue() const {
-  if (!pageflip || pageflipPeerPresent) return false;
+  if (!SETTINGS.pageflipEnabled || pageflipPeerPresent) return false;
+  // A pair configured with no link at all -- suspended for WiFi (section 6), or a radio that would
+  // not start -- is not waiting on anybody's answer, so it says so at once. The grace period below
+  // exists for a greeting still in flight, and here there is no greeting in flight.
+  if (!pageflip) return true;
   // Not while a peer might still be answering. A greeting takes a moment to come back, so the first
   // render of every paired book open would otherwise carry the badge and immediately have to lose
   // it -- a second full e-ink refresh, on every open, to un-say something that was never true.
@@ -1170,6 +1178,29 @@ void EpubReaderActivity::pageflipBegin() {
   // Off by default, and the gate is the point: bringing the link up costs a radio that transmits on
   // a timer, and almost nobody has a second X4 to pair it with.
   if (!SETTINGS.pageflipEnabled) return;
+
+  // Section 6. One radio, one channel: ESP-NOW peers have to sit on the same channel, and
+  // associating with an AP lets the AP choose it. Coming up here would do worse than fail, because
+  // the SDK transport's begin() runs its own end() first -- which disconnects WiFi and puts the
+  // mode back to off. A book opened during a download would silently kill the download.
+  //
+  // Re-asked every pump rather than once, and that is the whole of the resume path: the link comes
+  // back when WiFi goes away, re-pinning the channel by construction, because begin() sets it.
+  if (pageflipWifiActive()) {
+    if (!pageflipWifiSuspended) {
+      pageflipWifiSuspended = true;
+      LOG_INF("ERS", "WiFi has the radio; paired reading is suspended until it is done");
+      // Said, not merely shown. The badge alone would report a missing peer, which is a different
+      // problem with a different fix -- the user would go looking for the other device.
+      snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_WIFI_PAUSED));
+      pageflipSetSyncState(PageFlipSyncState::Reporting);
+    }
+    return;
+  }
+  if (pageflipWifiSuspended) {
+    pageflipWifiSuspended = false;
+    LOG_INF("ERS", "WiFi released the radio; bringing the paired link back");
+  }
 
   pageflipTransport = makePageFlipTransport();
   if (!pageflipTransport) {
@@ -1493,7 +1524,12 @@ void EpubReaderActivity::pageflipReconcileSettings() {
     pageflipEnd();
     return;
   }
-  if (!pageflip) return;
+  if (!pageflip) {
+    // Paired reading is switched off, so forget that the suspension was announced: switching it
+    // back on while WiFi still holds the radio has to say so again rather than fail quietly.
+    pageflipWifiSuspended = false;
+    return;
+  }
 
   // Role decides which half of the spread this device shows, so a change to it invalidates the
   // classification that produced the current one. Setting it up is the moment a user is most likely
@@ -1511,23 +1547,24 @@ void EpubReaderActivity::pageflipReconcileSettings() {
 
 void EpubReaderActivity::pageflipPump() {
   pageflipReconcileSettings();
-  if (!pageflip) {
-    // The badge cannot outlive the link: turning paired reading off mid-session has to take it off
-    // the screen too.
-    if (pageflipBadgeVisible) {
-      pageflipBadgeVisible = false;
-      requestUpdate();
-    }
-    return;
-  }
 
   // A peer appearing or vanishing changes the status bar, and nothing else in the reader would ever
   // redraw for it -- a page sits until the reader turns it. Without this the badge reports a state
-  // that stopped being true minutes ago.
+  // that stopped being true minutes ago. Reconciled ahead of the no-link return below, because
+  // "there is no link at all" is one of the states it reports: a pair suspended for WiFi (section
+  // 6) never gets one, and a pair switched off mid-session has to lose the badge with it.
   if (pageflipBadgeDue() != pageflipBadgeVisible) {
     pageflipBadgeVisible = !pageflipBadgeVisible;
     requestUpdate();
   }
+
+  // An outcome comes off the screen on its own, and it has to do that with no link too: the
+  // suspended-for-WiFi notice is posted at exactly the moment there is nothing else to pump.
+  if (pageflipSyncState == PageFlipSyncState::Reporting && millis() - pageflipSyncStateSinceMs >= SYNC_REPORT_MS) {
+    pageflipSetSyncState(PageFlipSyncState::None);
+  }
+
+  if (!pageflip) return;
 
   // Before anything is sent: the fingerprint has to describe the layout this device is actually
   // using, and this is also where the very first greeting goes out.
@@ -1552,9 +1589,6 @@ void EpubReaderActivity::pageflipPump() {
     pageflip->cancelSync();
     snprintf(pageflipSyncMessage, sizeof(pageflipSyncMessage), "%s", tr(STR_PAGEFLIP_SYNC_NO_REPLY));
     pageflipSetSyncState(PageFlipSyncState::Reporting);
-  }
-  if (pageflipSyncState == PageFlipSyncState::Reporting && millis() - pageflipSyncStateSinceMs >= SYNC_REPORT_MS) {
-    pageflipSetSyncState(PageFlipSyncState::None);
   }
 
   // Owed steps first: they are what a boundary crossing left behind, and the announce below must

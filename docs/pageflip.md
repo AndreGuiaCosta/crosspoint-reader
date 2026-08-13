@@ -901,6 +901,55 @@ Policy: **PageFlip suspends whenever WiFi STA/AP is active**, and resumes (re-pi
 channel) when it returns to `WIFI_MODE_NULL`. Show the suspension in the UI rather than failing
 silently.
 
+### Correction: this is an entry guard, and it cannot be anything else
+
+That policy reads as a symmetry — suspend when WiFi comes up, resume when it goes away — and the
+symmetry is not implementable, because there is exactly one signal and PageFlip is one of the
+things that moves it. `EspNowTransport::begin()` calls `WiFi.mode(WIFI_STA)`
+([NearbyTransfer.cpp:139](../freeink-sdk/libs/network/NearbyTransfer/src/NearbyTransfer.cpp)), so
+**whenever this device's own link is up, `WiFi.getMode() != WIFI_MODE_NULL` is true**. A pump-time
+"has WiFi appeared under us" test reads the pair's own radio as WiFi and tears it down, then finds
+the mode idle and brings it back — `esp_now_init`/`deinit` every frame, forever.
+
+So the question is only ever asked with the link **down**, which is what makes it unambiguous:
+
+```cpp
+void EpubReaderActivity::pageflipBegin() {
+  ...
+  if (pageflipWifiActive()) { /* suspended: say it once, and try again next pump */ return; }
+```
+
+Retrying every pump *is* the resume path, and it re-pins the channel for free, because `begin()`
+sets the channel. There is no second mechanism and no state machine.
+
+**What the guard is actually protecting is the other direction.** `EspNowTransport::begin()` runs
+its own `end()` first, and `end()` finishes with `WiFi.disconnect(false); WiFi.mode(WIFI_OFF)`
+([NearbyTransfer.cpp:179-180](../freeink-sdk/libs/network/NearbyTransfer/src/NearbyTransfer.cpp)).
+A paired reader opening a book during a font download would not merely fail to pair — it would kill
+the download. That is the cost the guard avoids, and it is worth avoiding whether or not the
+converse case is reachable.
+
+**And it is reachable, by one path out of eight.** Seven of the activities that raise WiFi reboot
+on the way out — `OtaUpdate`, `FontDownload`, `KOReaderSync`, `KOReaderAuth`, `ClockSync`,
+`CalibreConnect`, `OpdsBookBrowser` and `CrossPointWebServer` all call `silentRestart()` /
+`silentRestartToReader()` from `onExit()` when `WiFi.getMode() != WIFI_MODE_NULL`, which hands the
+reader back a device with the radio idle. The eighth is **Settings → Network**
+([SettingsActivity.cpp:383](../src/activities/settings/SettingsActivity.cpp)), which starts
+`WifiSelectionActivity` on its own account. That activity deliberately does not disconnect in
+`onExit()` — "the parent activity manages WiFi connection state"
+([WifiSelectionActivity.cpp:87-89](../src/activities/network/WifiSelectionActivity.cpp)) — and
+`SettingsActivity::onExit()` neither disconnects nor reboots. So join a network from Settings, back
+out, open a book, and the reader starts with a live STA.
+
+Without the guard that book open would **disconnect the network the user had just joined**, via the
+`end()` inside `begin()`. With it, the pair waits and says why. This is the case the notice exists
+for, and it is a hardware case, not a simulator artefact — the simulator is only how it is tested,
+because there the radio can be raised without leaving the reader.
+
+The UI is the status-bar badge plus a one-shot notice. The badge alone would be a lie by omission:
+it says "configured but not connected", which the user reads as a missing partner and goes looking
+for the other device.
+
 ---
 
 ## 7. Power — the honest unknown
@@ -990,7 +1039,7 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
 | Per-frame pump | `loop()` after `gpio.update()`, [main.cpp:465](../src/main.cpp) |
 | Local press: advance 2, broadcast | `EpubReaderActivity::pageTurn()` / `advanceOnePage()`, line 1040 |
 | Receive: advance 2 or heal | reuse `pendingPageJump` (lines 1316-1318) under `RenderLock` (1051) |
-| Radio gating by activity | mirror `bluetoothShouldBeActive()` / `bluetoothStartDeferred()` from `feat-bluetooth`'s `ActivityManager` |
+| Radio gating by activity | ✅ not the `bluetoothShouldBeActive()` shape after all: the reader is deleted on the way into every activity that raises WiFi, so the gate is one `WiFi.getMode()` test inside `pageflipBegin()` (§6) |
 | Auto-sleep coupling | `lastActivityTime`, main.cpp:494-499 |
 | Compat hash source | `CrossPointSettings::readerRenderSpec()`, [CrossPointSettings.cpp:251-265](../src/CrossPointSettings.cpp) |
 | Settings force-sync | the `ReaderRenderSpec`-feeding subset only (§5.1), via `JsonSettingsIO` |
@@ -1051,7 +1100,23 @@ Sender retries across the receiver's window using the ESP-NOW TX-ACK callback.
    Two new harnesses cover the rest: `run_sim_pair_resume.sh` (divergent — and it checks that the
    confirming device does *not* move) and `run_sim_pair_offline.sh` (the press after the peer is
    gone must turn exactly one page).
-6. **Coexistence** — §6 suspend/resume around WiFi.
+6. ✅ **Coexistence** — §6, and it turned out to be an entry guard rather than the suspend/resume
+   symmetry the section described; the correction and its reasoning are recorded there. The link is
+   not brought up while `WiFi.getMode() != WIFI_MODE_NULL`, the question is only ever asked with the
+   link down (our own `begin()` moves that same global), and retrying every pump is the whole of the
+   resume path — it re-pins the channel by construction.
+
+   What it protects is the direction the section did not emphasise: the SDK transport's `begin()`
+   runs its own `end()` first, which disconnects WiFi and switches the mode off, so a paired book
+   open would kill a live connection. Seven of the eight activities that raise WiFi reboot on the
+   way out and cannot reach this; **Settings → Network is the eighth and does not**, so opening a
+   book after joining a network there would have dropped that network. `run_sim_pair_wifi.sh` is
+   where it is
+   exercised: the left half opens its book with WiFi up, must suspend *before* any link comes up,
+   must turn exactly one page per press while suspended, and must then form the spread with a peer
+   that has been waiting alone once WiFi goes away. It needs two reference walks rather than one,
+   because a suspended half carries the status-bar badge and the same half in a working pair does
+   not, and the shots are compared byte for byte.
 7. **Power tuning** — wake window sweep against measured battery.
 8. **Settings and indicator** — ✅ for the settings and the badge; the pairing activity is
    deliberately still open, see below.
@@ -1109,6 +1174,11 @@ count and base port. `broadcast()` sends to every slot but its own, because ESP-
 broadcast back to its sender and the protocol should not carry self-filtering that exists only for
 the shim. The MAC is `02:50:46:00:00:<slot>` — locally administered, stable across runs, and
 ordered by slot, so the lower-MAC tiebreak resolves identically on every scripted run.
+
+Step 6 needed one addition to the ScriptDriver itself: a `wifi on|off` command, which sets the
+simulator's WiFi stub mode directly. Raising WiFi the way the firmware does means entering a network
+activity, and that deletes the reader and takes the pair with it — so there is no way to script the
+state §6 exists for without reaching past the UI.
 
 Two implementation notes worth not rediscovering:
 
