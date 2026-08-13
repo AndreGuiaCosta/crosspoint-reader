@@ -5,7 +5,10 @@
 #include <HalGPIO.h>
 #include <HalTiltSensor.h>
 #include <Logging.h>
+#include <components/UITheme.h>
 #include <components/bars/tap-zones.h>
+
+#include <algorithm>
 
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
@@ -22,6 +25,47 @@ enum ReaderTouchAction : freeink::ui::ActionId {
   READER_TOUCH_PREV = 1,
   READER_TOUCH_NEXT = 3,
 };
+
+// The margins and text viewport a reader lays out into.
+//
+// Taking the screen margin and the auto-page-turn state as arguments rather than reading them is
+// what lets PageFlip's settings preflight (docs/pageflip.md section 5.1) ask what this device's
+// viewport *would* be under a proposed margin, before writing anything. A second copy of the
+// arithmetic would drift, and a drifted copy presents as two paired devices that can never agree on
+// a layout -- diagnosed in the wrong file entirely.
+struct ReaderLayoutBox {
+  int marginTop = 0;
+  int marginRight = 0;
+  int marginBottom = 0;
+  int marginLeft = 0;
+  uint16_t viewportWidth = 0;
+  uint16_t viewportHeight = 0;
+};
+
+inline ReaderLayoutBox readerLayoutBox(const GfxRenderer& renderer, const uint8_t screenMargin,
+                                       const bool autoPageTurnActive) {
+  ReaderLayoutBox box;
+  // Physical bezel first, then the user's own margin on top of it.
+  renderer.getOrientedViewableTRBL(&box.marginTop, &box.marginRight, &box.marginBottom, &box.marginLeft);
+  box.marginTop += screenMargin;
+  box.marginLeft += screenMargin;
+  box.marginRight += screenMargin;
+
+  const uint8_t statusBarHeight = UITheme::getInstance().getStatusBarHeight();
+  // Reserves space for the automatic page turn indicator when there is no status bar, or a progress
+  // bar only.
+  if (autoPageTurnActive && (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
+    box.marginBottom +=
+        std::max(screenMargin,
+                 static_cast<uint8_t>(statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin));
+  } else {
+    box.marginBottom += std::max(screenMargin, statusBarHeight);
+  }
+
+  box.viewportWidth = renderer.getScreenWidth() - box.marginLeft - box.marginRight;
+  box.viewportHeight = renderer.getScreenHeight() - box.marginTop - box.marginBottom;
+  return box;
+}
 
 inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   switch (orientation) {

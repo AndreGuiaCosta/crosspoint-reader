@@ -296,6 +296,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   }
   int getReaderFontId() const;
 
+  // The same resolution against a font selection this device has not adopted. PageFlip's settings
+  // preflight (docs/pageflip.md section 5.1) has to know what a *proposed* family and size would
+  // resolve to here before anything is written -- and the answer is what tells two devices with the
+  // same family name but different font files apart, since the id comes from the file's own hash.
+  int readerFontIdFor(const char* sdFamilyName, uint8_t builtinFamily, uint8_t pointSize) const;
+
   // Drop the SD font selection and fall back to the built-in family. The reader
   // point size comes back into BUILTIN_READER_POINT_SIZES with it, since that is
   // the only set a built-in family ships — otherwise the settings UI would keep
@@ -350,6 +356,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   static uint8_t sleepTimeoutEnumToMinutes(uint8_t legacyValue);
 
   float getReaderLineCompression() const;
+  // As above: the same table, against a selection that is only being considered.
+  static float readerLineCompressionFor(bool usingSdFont, uint8_t builtinFamily, uint8_t lineSpacingValue);
   unsigned long getSleepTimeoutMs() const;
   int getRefreshFrequency() const;
 };

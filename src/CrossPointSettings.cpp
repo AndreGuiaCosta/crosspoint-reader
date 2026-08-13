@@ -265,9 +265,14 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
 }
 
 float CrossPointSettings::getReaderLineCompression() const {
+  return readerLineCompressionFor(sdFontFamilyName[0] != '\0', fontFamily, lineSpacing);
+}
+
+float CrossPointSettings::readerLineCompressionFor(const bool usingSdFont, const uint8_t builtinFamily,
+                                                   const uint8_t lineSpacingValue) {
   // SD card fonts use same compression as Bookerly (the most neutral values)
-  if (sdFontFamilyName[0] != '\0') {
-    switch (lineSpacing) {
+  if (usingSdFont) {
+    switch (lineSpacingValue) {
       case TIGHT:
         return 0.95f;
       case NORMAL:
@@ -278,10 +283,10 @@ float CrossPointSettings::getReaderLineCompression() const {
     }
   }
 
-  switch (fontFamily) {
+  switch (builtinFamily) {
     case NOTOSERIF:
     default:
-      switch (lineSpacing) {
+      switch (lineSpacingValue) {
         case TIGHT:
           return 0.95f;
         case NORMAL:
@@ -291,7 +296,7 @@ float CrossPointSettings::getReaderLineCompression() const {
           return 1.1f;
       }
     case NOTOSANS:
-      switch (lineSpacing) {
+      switch (lineSpacingValue) {
         case TIGHT:
           return 0.90f;
         case NORMAL:
@@ -334,9 +339,14 @@ void CrossPointSettings::clearSdFontFamily() {
 }
 
 int CrossPointSettings::getReaderFontId() const {
+  return readerFontIdFor(sdFontFamilyName, fontFamily, fontPointSize);
+}
+
+int CrossPointSettings::readerFontIdFor(const char* sdFamilyName, const uint8_t builtinFamily,
+                                        const uint8_t pointSize) const {
   // Check SD card font first
-  if (sdFontFamilyName[0] != '\0' && sdFontIdResolver) {
-    int id = sdFontIdResolver(sdFontResolverCtx, sdFontFamilyName, fontPointSize);
+  if (sdFamilyName != nullptr && sdFamilyName[0] != '\0' && sdFontIdResolver) {
+    int id = sdFontIdResolver(sdFontResolverCtx, sdFamilyName, pointSize);
     if (id != 0) return id;
     // Fall through to built-in if SD font not found
   }
@@ -346,8 +356,8 @@ int CrossPointSettings::getReaderFontId() const {
   // normally persists the snap; snap again here (without allocating — this runs
   // in the page render loop) so rendering is correct even before it has run.
   const uint8_t pt =
-      snapToNearestPointSize(BUILTIN_READER_POINT_SIZES, std::size(BUILTIN_READER_POINT_SIZES), fontPointSize);
-  const bool sans = (fontFamily == NOTOSANS);
+      snapToNearestPointSize(BUILTIN_READER_POINT_SIZES, std::size(BUILTIN_READER_POINT_SIZES), pointSize);
+  const bool sans = (builtinFamily == NOTOSANS);
   switch (pt) {
     case 12:
       return sans ? NOTOSANS_12_FONT_ID : NOTOSERIF_12_FONT_ID;
