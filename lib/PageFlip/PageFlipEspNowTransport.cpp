@@ -8,6 +8,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <NearbyTransfer.h>
+#include <esp_wifi.h>
 
 #include <cstring>
 
@@ -45,10 +46,18 @@ bool PageFlipEspNowTransport::begin() {
 
   radio = std::move(allocated);
   LOG_INF(MODULE, "Paired link up on channel %u", static_cast<unsigned>(CHANNEL));
-  // TODO(section 7): the SDK's begin() sets WIFI_PS_NONE and WiFi.mode(WIFI_STA), which pins the
-  // CPU at full clock via the HalPowerManager guard and stops the radio ever sleeping. Re-enabling
-  // modem sleep and installing the wake window belongs here, but it changes shared power-management
-  // behaviour and has to be measured on two devices rather than assumed.
+  // Section 7, step one. The SDK's begin() forces WIFI_PS_NONE, so the radio never sleeps at all.
+  // Modem sleep is the mechanism the hardware actually provides for this, and the prebuilt libs set
+  // CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=y, so it is available to a *disconnected* STA --
+  // which is what both halves are. The wake window is deliberately left at its default (maximum):
+  // one variable moves here, because "does modem sleep break ESP-NOW receive at all" has to be
+  // answered before any window value is worth sweeping.
+  //
+  // This does not latch onto anyone else. The SDK's begin() re-asserts WIFI_PS_NONE on every
+  // session and its end() takes the radio down with WiFi.mode(WIFI_OFF), so a later non-PageFlip
+  // WiFi user (file transfer, OTA, sync) starts from the driver default rather than from this.
+  const esp_err_t psResult = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  LOG_INF(MODULE, "Modem sleep %s (wake window: default)", psResult == ESP_OK ? "enabled" : "REFUSED");
   return true;
 }
 
