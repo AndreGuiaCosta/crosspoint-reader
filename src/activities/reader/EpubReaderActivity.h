@@ -146,6 +146,23 @@ class EpubReaderActivity final : public Activity {
   int pageflipCachedOffsetSpine = -1;
   int pageflipCachedOffsetPage = -1;
   uint32_t pageflipCachedOffset = 0;
+  // The last anchor actually read, so saying "still here" never has to wait for the render lock.
+  //
+  // Every other outgoing position is deliberately skipped while a render is in flight -- it would
+  // otherwise describe a page this device is in the middle of leaving. Liveness is the exception,
+  // and treating it like the rest is what made a busy device look like a dead one: a render on real
+  // e-ink is seconds (4,241 ms measured on an image-bearing page against 0.88 s for a text page),
+  // two of them back to back outlast PEER_PRESENCE_TIMEOUT_MS, and the peer then withdraws presence
+  // from a device that is running perfectly well. The next press there advances one page instead of
+  // two, which desyncs the spread -- so the cost is a wrong page, not a wrong notice.
+  //
+  // Kept separate from the offset cache above, which is dropped whenever the pagination moves: a
+  // stale page number is exactly what this must still be able to answer with, because the claim it
+  // makes is "this device is awake", not "this device is here".
+  bool pageflipHaveLastAnchor = false;
+  int32_t pageflipLastAnchorSpine = 0;
+  int pageflipLastAnchorPage = 0;
+  uint32_t pageflipLastAnchorOffset = 0;
 
   // The settings force-sync (docs/pageflip.md section 5.1). Detecting a mismatch without a way to
   // fix it reads as "the feature is broken", so a confirmed mismatch offers the repair.
@@ -356,17 +373,20 @@ class EpubReaderActivity final : public Activity {
   // Returns false while a render is in flight: `section` belongs to the render task, which assigns
   // and resets it under the lock, so reading it unguarded is a use-after-free. Callers retry on the
   // next pump rather than block the main task behind a full page render.
-  bool pageflipSettledPage(int& page);
+  bool pageflipSettledPage(int32_t& spineIndex, int& page);
   // The same, plus the content offset the join negotiation compares (section 4.2). Separate because
   // it can fail where the page alone cannot: a section that is not loaded, or a page outside it,
   // has no anchor to report, and a greeting without one announces a position the peer cannot test
   // itself against. Turns keep using the page-only form -- they run between devices already proven
   // to share a layout, where a page number means the same thing on both.
-  bool pageflipSettledPosition(int& page, uint32_t& visibleTextOffset);
+  bool pageflipSettledPosition(int32_t& spineIndex, int& page, uint32_t& visibleTextOffset);
   // The position for a presence packet, which has to go out in places the join's anchor cannot be
   // read at all -- end of book most of all, where there is no section and never will be until the
   // reader leaves. Falls back to the last anchor read rather than staying silent.
-  bool pageflipPresenceAnchor(int& page, uint32_t& visibleTextOffset);
+  bool pageflipPresenceAnchor(int32_t& spineIndex, int& page, uint32_t& visibleTextOffset);
+  // Remembers an anchor that was just read, so the heartbeat above it has something to say while a
+  // render holds the lock.
+  void pageflipRecordAnchor(int32_t spineIndex, int page, uint32_t visibleTextOffset);
   // Drops back to solo reading and arms the notice. A peer that cannot apply our turns must not
   // gate the two-step advance.
   void pageflipReportMismatch(const PageFlipDecision& decision);

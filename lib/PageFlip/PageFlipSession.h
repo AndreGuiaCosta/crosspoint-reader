@@ -178,6 +178,11 @@ class PageFlipSession {
   //    peer that powered off or walked out of range says nothing on its way out.
   bool announcePresence(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset);
 
+  // Whether the join negotiation (docs/pageflip.md section 4.2) has settled on a case. Read by the
+  // reader before it lets a stale position onto the wire: a resolved join ignores the positions in
+  // later greetings, an unresolved one classifies the pair from them.
+  bool isJoinResolved() const { return joinResolved; }
+
   // Pumped once per frame. Returns true when a packet was received and `decision` was filled; the
   // decision may still be Ignore, which is not the same as "nothing arrived" -- only a decoded
   // packet from the paired book counts as peer contact for the auto-sleep timer (section 4).

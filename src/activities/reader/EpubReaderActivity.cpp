@@ -1269,28 +1269,36 @@ void EpubReaderActivity::pageflipEnd() {
   pageflipBadgeVisible = false;
   pageflipCachedOffsetSpine = -1;
   pageflipCachedOffsetPage = -1;
+  pageflipHaveLastAnchor = false;
 }
 
-bool EpubReaderActivity::pageflipSettledPage(int& page) {
+bool EpubReaderActivity::pageflipSettledPage(int32_t& spineIndex, int& page) {
   // peek() first so the main task never blocks behind a page render; the lock is then taken for the
   // read itself, because peek() alone leaves the window open for render() to start and reset the
   // section under us. Same shape as the deferred partial-extension start in loop().
   if (RenderLock::peek()) return false;
   RenderLock lock(*this);
+  // The spine index comes out under the same lock as the page. render() writes it -- it clamps the
+  // value on the way in, and the end-of-book panel is chosen from it -- so a caller reading it
+  // afterwards would be reading a variable the render task owns, and would pair a page from one
+  // moment with a chapter from another.
+  spineIndex = currentSpineIndex;
   page = section ? section->currentPage : nextPageNumber;
   return true;
 }
 
-bool EpubReaderActivity::pageflipSettledPosition(int& page, uint32_t& visibleTextOffset) {
+bool EpubReaderActivity::pageflipSettledPosition(int32_t& spineIndex, int& page, uint32_t& visibleTextOffset) {
   if (RenderLock::peek()) return false;
   RenderLock lock(*this);
   if (!section) return false;
+  // Under the lock with the page, for the reason given in pageflipSettledPage.
+  spineIndex = currentSpineIndex;
   page = section->currentPage;
   if (page < 0 || page >= section->pageCount) return false;
   // Cached per position: the heartbeat asks this every couple of seconds, and the lookup below is a
   // file read once the chapter has finalized. The cache is dropped whenever the pagination moves
   // (pageflipRefreshCompat), which is the only way an answer for the same page could change.
-  if (currentSpineIndex == pageflipCachedOffsetSpine && page == pageflipCachedOffsetPage) {
+  if (spineIndex == pageflipCachedOffsetSpine && page == pageflipCachedOffsetPage) {
     visibleTextOffset = pageflipCachedOffset;
     return true;
   }
@@ -1298,15 +1306,18 @@ bool EpubReaderActivity::pageflipSettledPosition(int& page, uint32_t& visibleTex
   // while the section is building, one small file read otherwise.
   const auto offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(page));
   if (!offset.has_value()) return false;
-  pageflipCachedOffsetSpine = currentSpineIndex;
+  pageflipCachedOffsetSpine = spineIndex;
   pageflipCachedOffsetPage = page;
   pageflipCachedOffset = *offset;
   visibleTextOffset = *offset;
   return true;
 }
 
-bool EpubReaderActivity::pageflipPresenceAnchor(int& page, uint32_t& visibleTextOffset) {
-  if (pageflipSettledPosition(page, visibleTextOffset)) return true;
+bool EpubReaderActivity::pageflipPresenceAnchor(int32_t& spineIndex, int& page, uint32_t& visibleTextOffset) {
+  if (pageflipSettledPosition(spineIndex, page, visibleTextOffset)) {
+    pageflipRecordAnchor(spineIndex, page, visibleTextOffset);
+    return true;
+  }
 
   // No section to ask. That is not a transient state at end of book: render() takes the end-panel
   // early return before anything is loaded, and the forward crossing that got here already reset
@@ -1317,9 +1328,37 @@ bool EpubReaderActivity::pageflipPresenceAnchor(int& page, uint32_t& visibleText
   //
   // The anchor only ever feeds a join probe, and a device with no section has nothing to join on,
   // so the last one read is good enough to keep saying "still here".
-  if (!pageflipSettledPage(page)) return false;
-  visibleTextOffset = pageflipCachedOffset;
+  if (pageflipSettledPage(spineIndex, page)) {
+    pageflipRecordAnchor(spineIndex, page, pageflipCachedOffset);
+    visibleTextOffset = pageflipLastAnchorOffset;
+    return true;
+  }
+
+  // Nothing could be read at all, which here means one thing: the render task holds the lock. That
+  // is not a reason to fall silent. A render is the one activity that proves this device is alive,
+  // and on real e-ink it lasts longer than the peer's patience -- so answer from the last anchor
+  // rather than skipping the heartbeat and letting a busy device be declared gone.
+  //
+  // The position is a few seconds old, which is why this is allowed only once the join has
+  // resolved. A resolved join ignores the positions in later greetings; an unresolved one
+  // classifies the pair from them -- and section 4.2's Identical case is a direct equality test on
+  // exactly this pair of values, so a stale anchor there could make the spread from a page this
+  // device has already left. While the join is still running both devices are greeting each other
+  // anyway, so falling silent for the length of one render costs nothing the round does not retry.
+  if (!pageflip->isJoinResolved()) return false;
+  if (!pageflipHaveLastAnchor) return false;
+  spineIndex = pageflipLastAnchorSpine;
+  page = pageflipLastAnchorPage;
+  visibleTextOffset = pageflipLastAnchorOffset;
   return true;
+}
+
+void EpubReaderActivity::pageflipRecordAnchor(const int32_t spineIndex, const int page,
+                                             const uint32_t visibleTextOffset) {
+  pageflipLastAnchorSpine = spineIndex;
+  pageflipLastAnchorPage = page;
+  pageflipLastAnchorOffset = visibleTextOffset;
+  pageflipHaveLastAnchor = true;
 }
 
 bool EpubReaderActivity::pageflipJoinAnswerInputs(const int32_t peerSpineIndex, const uint32_t peerVisibleTextOffset,
@@ -1484,7 +1523,8 @@ void EpubReaderActivity::pageflipRefreshCompat() {
   // greeting without one would announce a position the peer cannot compare itself against.
   int page = 0;
   uint32_t offset = 0;
-  if (!pageflipSettledPosition(page, offset)) return;
+  int32_t spineIndex = 0;
+  if (!pageflipSettledPosition(spineIndex, page, offset)) return;
 
   pageflipCompatHash = hash;
   pageflip->setBook(pageflipBookId, hash);
@@ -1492,7 +1532,7 @@ void EpubReaderActivity::pageflipRefreshCompat() {
   // about a layout this device no longer has. The mismatch latch is deliberately NOT cleared here
   // -- it clears when a compatible peer actually answers, so the notice tracks the real state
   // rather than re-firing on every setting the user touches.
-  pageflip->announceHello(currentSpineIndex, page, offset);
+  pageflip->announceHello(spineIndex, page, offset);
   LOG_DBG("ERS", "PageFlip layout hash %08X, re-greeting", static_cast<unsigned>(hash));
 }
 
@@ -1618,21 +1658,23 @@ void EpubReaderActivity::pageflipPump() {
   }
 
   int settledPage = 0;
-  if (announceWhenSettled && pendingAdvanceSteps == 0 && section && pageflipSettledPage(settledPage)) {
+  int32_t settledSpineIndex = 0;
+  if (announceWhenSettled && pendingAdvanceSteps == 0 && section &&
+      pageflipSettledPage(settledSpineIndex, settledPage)) {
     announceWhenSettled = false;
     // Same test loop() uses. The flag tells the peer to show the end panel rather than a page it
     // does not have (section 3, end of book).
-    const bool atEnd = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
-    pageflip->announceLocalTurn(pendingAdvanceForward, currentSpineIndex, settledPage, atEnd);
+    const bool atEnd = settledSpineIndex > 0 && settledSpineIndex >= epub->getSpineItemsCount();
+    pageflip->announceLocalTurn(pendingAdvanceForward, settledSpineIndex, settledPage, atEnd);
   }
 
   // Owed greeting answer. Latched by the receive path below so the answer's position is read under
   // the lock like every other outgoing position, and retried rather than dropped -- a greeting is
   // sent once, so losing the answer leaves the peer waiting indefinitely.
   uint32_t settledOffset = 0;
-  if (pageflipOweJoinDecline && pageflipSettledPosition(settledPage, settledOffset)) {
+  if (pageflipOweJoinDecline && pageflipSettledPosition(settledSpineIndex, settledPage, settledOffset)) {
     pageflipOweJoinDecline = false;
-    pageflip->announcePresence(currentSpineIndex, settledPage, settledOffset);
+    pageflip->announcePresence(settledSpineIndex, settledPage, settledOffset);
   }
 
   // The join's answer, for the same reason and with the same retry: it carries a position, and it
@@ -1649,10 +1691,15 @@ void EpubReaderActivity::pageflipPump() {
   // deliberately "has ever been in contact" and not "is present right now": if a transient outage
   // expired presence on both halves at once, gating on presence would stop both heartbeats and
   // neither could ever re-acquire the other, which is the turnSeq deadlock shape again.
+  //
+  // The anchor carries the spine index it was read with. This is the one outgoing message that can
+  // go out with a render in flight, and render() writes currentSpineIndex -- so the value here has
+  // to be the one the anchor was taken from rather than whatever it says at this instant.
+  int32_t anchorSpineIndex = 0;
   if (lastPeerContactMs != 0 && millis() - pageflipLastHeartbeatMs >= PEER_HEARTBEAT_MS &&
-      pageflipPresenceAnchor(settledPage, settledOffset)) {
+      pageflipPresenceAnchor(anchorSpineIndex, settledPage, settledOffset)) {
     pageflipLastHeartbeatMs = millis();
-    pageflip->announcePresence(currentSpineIndex, settledPage, settledOffset);
+    pageflip->announcePresence(anchorSpineIndex, settledPage, settledOffset);
   }
 
   // And presence expires. Nothing else expires it: a peer that powered off or walked out of range
