@@ -185,10 +185,39 @@ class EpubReaderActivity final : public Activity {
   // with the link up, so a cold crossing always releases, and comfortably under what the same
   // device has without it, so the link comes back afterwards.
   static constexpr uint32_t PAGEFLIP_COLD_BUILD_MIN_FREE_HEAP = 64 * 1024;
+  // The floor for coming BACK, which is not the floor for standing down and must never be.
+  //
+  // The original code used one number for both, reasoning that a suspension only starts at a cold
+  // crossing so the resume could not walk into its own trigger. Measured on two X4s 2026-09-05, it
+  // walks straight into it: after the build the device idles at 47,296 B with the link DOWN, under
+  // the 64 KB above, so the resume was blocked forever and the pair silently fell back to solo for
+  // the rest of the session. The same run also showed why the shared number was never going to
+  // work -- releasing the transport gave back nothing at all (52,212 B free with the link up,
+  // 47,296 B with it down), so a device that has stood down does not have more room than one that
+  // has not, it has slightly less.
+  //
+  // This is therefore an OOM guard and nothing more: comfortably under the ~47 KB a device actually
+  // has at this point, comfortably above nothing. begin() failing is handled -- the latch is kept
+  // and the next pump asks again -- so this only has to catch the case where trying is reckless.
+  static constexpr uint32_t PAGEFLIP_COLD_BUILD_RESUME_MIN_FREE_HEAP = 24 * 1024;
+  // Throttle for the one-line "why is the link still down" diagnostic below.
+  static constexpr unsigned long PAGEFLIP_COLD_BUILD_WAIT_LOG_MS = 5000;
+  // How long a suspended link waits for a section that never appears before giving up on it.
+  //
+  // A build that fails resets the section and reports nothing else, so "null section" is the only
+  // trace it leaves -- and that is also what the moments before render() constructs the new one look
+  // like. This separates them: past this, a chapter that still is not there is not coming.
+  static constexpr unsigned long PAGEFLIP_COLD_BUILD_START_GRACE_MS = 5000;
   // Whether the link is down for a build rather than for WiFi (section 6) or by choice. Kept apart
   // from pageflipWifiSuspended precisely so the two resume paths cannot be confused: they wait on
   // different things and one must not clear the other's latch.
   bool pageflipHeapSuspended = false;
+  // The chapter the suspension above is being held for, and when it started. Latched at the suspend
+  // because that is the only place the answer exists: by the time the resume runs, the section has
+  // been dropped and the reader's own state cannot say which build is being waited on.
+  int32_t pageflipColdBuildSpine = -1;
+  unsigned long pageflipColdBuildStartMs = 0;
+  unsigned long pageflipColdBuildWaitLogMs = 0;
   bool pageflipHaveLastAnchor = false;
   int32_t pageflipLastAnchorSpine = 0;
   int pageflipLastAnchorPage = 0;
@@ -421,6 +450,9 @@ class EpubReaderActivity final : public Activity {
   // that is done. Called from the main task at the points a section is dropped for another one.
   void pageflipSuspendForColdBuild();
   void pageflipResumeAfterColdBuild();
+  // Whether the chapter the link was released for has finished, one way or the other. Taken under
+  // the render lock, because the section it reads belongs to the render task.
+  bool pageflipColdBuildOver();
   // Whether this spine has no finished layout on the SD card, so reaching it means a full build.
   bool pageflipSectionCacheMissing(int spineIndex) const;
   // Drops back to solo reading and arms the notice. A peer that cannot apply our turns must not

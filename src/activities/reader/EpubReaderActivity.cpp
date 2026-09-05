@@ -1398,20 +1398,71 @@ void EpubReaderActivity::pageflipSuspendForColdBuild() {
   LOG_INF("ERS", "Low heap (%u bytes); releasing the paired link to build the chapter",
           static_cast<unsigned>(freeHeap));
   pageflipHeapSuspended = true;
+  // Latched here, where the answer still exists. The resume cannot work this out for itself: the
+  // section was dropped a few lines ago and the reader looks the same whether the build is finished,
+  // failed, or has not started.
+  pageflipColdBuildSpine = currentSpineIndex;
+  pageflipColdBuildStartMs = millis();
   pageflip->end();
+}
+
+bool EpubReaderActivity::pageflipColdBuildOver() {
+  // A held lock IS the answer: render() keeps it for the whole pass, and loop() drives the rest of a
+  // windowed build in chunks between passes. So "someone is holding it" means the work this link
+  // stood down for is still running, and nothing else needs to be asked.
+  if (RenderLock::peek()) return false;
+  RenderLock lock(*this);
+  // The reader moved on -- a jump, a heal, the book closing. Whatever was being waited for is over.
+  if (currentSpineIndex != pageflipColdBuildSpine) return true;
+  if (!section) {
+    // Two very different states share this one appearance: render() has not built the new section
+    // yet (milliseconds), or the build failed and reset it (which reports nothing else at all, and
+    // is permanent). Only elapsed time separates them.
+    return millis() - pageflipColdBuildStartMs >= PAGEFLIP_COLD_BUILD_START_GRACE_MS;
+  }
+  if (!section->isBuilding()) return true;
+  // A windowed build STAYS "building" after it has done its work. loop()'s tick stops once the
+  // build is far enough ahead of the reader and only resumes when the reader advances, so a settled
+  // reader leaves isBuilding() true indefinitely. Measured on two X4s 2026-09-05: the chapter was on
+  // screen and its last page processed at [466515], and isBuilding() was still true 68 s later with
+  // the heap flat at 53,316 B and not one page processed in between -- the link stayed down for the
+  // rest of the session and the pair fell back to solo.
+  //
+  // So the question is not "has the build finished" but "is it still doing work", and loop() already
+  // answers that: the same condition it uses to decide whether to tick, negated.
+  return !section->isPartial() &&
+         static_cast<int>(section->pageCount) >= section->currentPage + BUILD_WINDOW_AHEAD;
 }
 
 void EpubReaderActivity::pageflipResumeAfterColdBuild() {
   if (!pageflip || !pageflipHeapSuspended) return;
   // Not while the build is still running: the whole point was to keep the heap out of its way, and
   // a background build carries on for pages after the one being read is on screen.
-  if (section && section->isBuilding()) return;
-  if (ESP.getFreeHeap() < PAGEFLIP_COLD_BUILD_MIN_FREE_HEAP) return;
+  //
+  // Asking "is the section building" directly does not work, and on hardware it defeated the whole
+  // guard: advanceOnePage() resets the section and suspends in the same breath, so the very next
+  // pump sees a NULL section -- which is not "building" -- and a free heap that looks healthy
+  // precisely because the radio has just left. Measured 2026-09-05: the link came back 43 ms after
+  // it went down, before the build had begun, and the chapter was laid out with the radio resident
+  // anyway (bottomed at 5,084 B free, and the build failed).
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const bool built = pageflipColdBuildOver();
+  if (!built || freeHeap < PAGEFLIP_COLD_BUILD_RESUME_MIN_FREE_HEAP) {
+    // Which gate is holding, at most once every few seconds. Without this the two waits are
+    // indistinguishable in a log -- a link that stays down says nothing at all -- and working out
+    // which one it was cost a whole bench run and a reflash.
+    if (millis() - pageflipColdBuildWaitLogMs >= PAGEFLIP_COLD_BUILD_WAIT_LOG_MS) {
+      pageflipColdBuildWaitLogMs = millis();
+      LOG_DBG("ERS", "Paired link still down: build %s, free %u bytes", built ? "done" : "running",
+              static_cast<unsigned>(freeHeap));
+    }
+    return;
+  }
   // Left latched when begin() fails, so this is re-asked next pump rather than the pair being lost
-  // for the session. One floor serves both directions: a suspension only ever starts at a cold
-  // crossing, so coming back up cannot walk into its own trigger.
+  // for the session.
   if (!pageflip->begin()) return;
   pageflipHeapSuspended = false;
+  pageflipColdBuildSpine = -1;
   LOG_INF("ERS", "Chapter built; bringing the paired link back");
 }
 
