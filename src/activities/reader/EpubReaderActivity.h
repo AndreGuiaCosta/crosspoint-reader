@@ -159,6 +159,23 @@ class EpubReaderActivity final : public Activity {
   // Kept separate from the offset cache above, which is dropped whenever the pagination moves: a
   // stale page number is exactly what this must still be able to answer with, because the claim it
   // makes is "this device is awake", not "this device is here".
+  // Free heap under which the link is put down for the length of a cold chapter build.
+  //
+  // A build is the reader's largest transient, and the radio is 60 KB of resident heap it does not
+  // need while one runs. With the link up a device sat at 40,728 B free; the same device building a
+  // cold section bottomed out at 4,384 B, and its partner -- building the SAME chapter at the same
+  // moment, because a paired turn advances both halves at once -- ran out and called abort() from a
+  // throwing STL allocation inside the builder. The pair does not merely share the exposure, it
+  // doubles it, and the code that dies is the code that cannot check first.
+  //
+  // The number is a first estimate and wants a bench pass: it is set above the ~40 KB a device has
+  // with the link up, so a cold crossing always releases, and comfortably under what the same
+  // device has without it, so the link comes back afterwards.
+  static constexpr uint32_t PAGEFLIP_COLD_BUILD_MIN_FREE_HEAP = 64 * 1024;
+  // Whether the link is down for a build rather than for WiFi (section 6) or by choice. Kept apart
+  // from pageflipWifiSuspended precisely so the two resume paths cannot be confused: they wait on
+  // different things and one must not clear the other's latch.
+  bool pageflipHeapSuspended = false;
   bool pageflipHaveLastAnchor = false;
   int32_t pageflipLastAnchorSpine = 0;
   int pageflipLastAnchorPage = 0;
@@ -387,6 +404,12 @@ class EpubReaderActivity final : public Activity {
   // Remembers an anchor that was just read, so the heartbeat above it has something to say while a
   // render holds the lock.
   void pageflipRecordAnchor(int32_t spineIndex, int page, uint32_t visibleTextOffset);
+  // Puts the link down for a chapter that has to be laid out from scratch, and brings it back when
+  // that is done. Called from the main task at the points a section is dropped for another one.
+  void pageflipSuspendForColdBuild();
+  void pageflipResumeAfterColdBuild();
+  // Whether this spine has no finished layout on the SD card, so reaching it means a full build.
+  bool pageflipSectionCacheMissing(int spineIndex) const;
   // Drops back to solo reading and arms the notice. A peer that cannot apply our turns must not
   // gate the two-step advance.
   void pageflipReportMismatch(const PageFlipDecision& decision);

@@ -1079,6 +1079,9 @@ bool EpubReaderActivity::advanceOnePage(bool isForwardTurn) {
         currentSpineIndex++;
         section.reset();
       }
+#ifdef FREEINK_CAP_PAGEFLIP
+      pageflipSuspendForColdBuild();
+#endif
       return false;
     }
   } else {
@@ -1093,6 +1096,9 @@ bool EpubReaderActivity::advanceOnePage(bool isForwardTurn) {
         currentSpineIndex--;
         section.reset();
       }
+#ifdef FREEINK_CAP_PAGEFLIP
+      pageflipSuspendForColdBuild();
+#endif
       return false;
     }
   }
@@ -1147,6 +1153,7 @@ void EpubReaderActivity::pageflipHealTo(const PageFlipDecision& decision) {
     pendingPageJump.reset();
     section.reset();
   }
+  pageflipSuspendForColdBuild();
   // The role offset is a step, not arithmetic: a section boundary may sit between the peer's page
   // and ours. It is applied by the pump once the section is back.
   pendingAdvanceForward = decision.forward;
@@ -1197,6 +1204,13 @@ void EpubReaderActivity::pageflipBegin() {
   //
   // Re-asked every pump rather than once, and that is the whole of the resume path: the link comes
   // back when WiFi goes away, re-pinning the channel by construction, because begin() sets it.
+  // And not before the first page is on screen. Opening a book on a cold cache is the other way
+  // into the build above, and the 60 KB the link costs is worth more to that build than to a pair
+  // that has nothing to say yet: the first greeting waits for a render anyway, because the layout
+  // fingerprint is a render() output. buildViewportWidth is that output, so zero means no render
+  // has landed. Retried every pump by pageflipReconcileSettings, which is the whole resume path.
+  if (buildViewportWidth == 0) return;
+
   if (pageflipWifiHoldsRadio()) {
     if (!pageflipWifiSuspended) {
       pageflipWifiSuspended = true;
@@ -1270,6 +1284,7 @@ void EpubReaderActivity::pageflipEnd() {
   pageflipCachedOffsetSpine = -1;
   pageflipCachedOffsetPage = -1;
   pageflipHaveLastAnchor = false;
+  pageflipHeapSuspended = false;
 }
 
 bool EpubReaderActivity::pageflipSettledPage(int32_t& spineIndex, int& page) {
@@ -1351,6 +1366,52 @@ bool EpubReaderActivity::pageflipPresenceAnchor(int32_t& spineIndex, int& page, 
   page = pageflipLastAnchorPage;
   visibleTextOffset = pageflipLastAnchorOffset;
   return true;
+}
+
+bool EpubReaderActivity::pageflipSectionCacheMissing(const int spineIndex) const {
+  if (!epub || spineIndex < 0) return false;
+  // Same path Section builds for itself. Asked here rather than inferred, because "will this
+  // chapter have to be laid out" is the only thing that separates a crossing worth paying for from
+  // an ordinary one: with the link up a device is always under the floor below, so a heap test on
+  // its own would put the pair down at every chapter of every book.
+  char path[160];
+  snprintf(path, sizeof(path), "%s/sections/%d.bin", epub->getCachePath().c_str(), spineIndex);
+  return !Storage.exists(path);
+}
+
+void EpubReaderActivity::pageflipSuspendForColdBuild() {
+  if (!pageflip || pageflipHeapSuspended) return;
+  if (!pageflipSectionCacheMissing(currentSpineIndex)) return;
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap >= PAGEFLIP_COLD_BUILD_MIN_FREE_HEAP) return;
+
+  // The session survives; only the transport goes. That distinction is the design: tearing the
+  // session down would reset turnSeq and the join, so every cold chapter would re-negotiate the
+  // spread -- and two halves that finish building at different moments classify as Divergent, which
+  // is a resume prompt in front of the user at every chapter boundary.
+  //
+  // The cost, stated plainly: a radio that is off cannot say "still here", so a build longer than
+  // PEER_PRESENCE_TIMEOUT_MS drops presence on the peer, and the first press after that advances
+  // one page instead of two. That is the flap this reader works hard to avoid everywhere else, and
+  // it is still the better trade -- the alternative on this path is abort() and a reboot.
+  LOG_INF("ERS", "Low heap (%u bytes); releasing the paired link to build the chapter",
+          static_cast<unsigned>(freeHeap));
+  pageflipHeapSuspended = true;
+  pageflip->end();
+}
+
+void EpubReaderActivity::pageflipResumeAfterColdBuild() {
+  if (!pageflip || !pageflipHeapSuspended) return;
+  // Not while the build is still running: the whole point was to keep the heap out of its way, and
+  // a background build carries on for pages after the one being read is on screen.
+  if (section && section->isBuilding()) return;
+  if (ESP.getFreeHeap() < PAGEFLIP_COLD_BUILD_MIN_FREE_HEAP) return;
+  // Left latched when begin() fails, so this is re-asked next pump rather than the pair being lost
+  // for the session. One floor serves both directions: a suspension only ever starts at a cold
+  // crossing, so coming back up cannot walk into its own trigger.
+  if (!pageflip->begin()) return;
+  pageflipHeapSuspended = false;
+  LOG_INF("ERS", "Chapter built; bringing the paired link back");
 }
 
 void EpubReaderActivity::pageflipRecordAnchor(const int32_t spineIndex, const int page,
@@ -1650,6 +1711,11 @@ void EpubReaderActivity::pageflipPump() {
     pageflipSetSyncState(PageFlipSyncState::Reporting);
   }
 
+  // A link put down for a chapter build comes back here, for the same reason section 6's does: the
+  // condition is re-tested every pump rather than hooked to an event, so nothing has to remember to
+  // ask.
+  pageflipResumeAfterColdBuild();
+
   // Owed steps first: they are what a boundary crossing left behind, and the announce below must
   // report a settled position rather than a half-applied one.
   if (pendingAdvanceSteps > 0 && section && !RenderLock::peek()) {
@@ -1657,9 +1723,15 @@ void EpubReaderActivity::pageflipPump() {
     requestUpdate();
   }
 
+  //
+  // isLinkUp() is part of the wait, not an optimisation. A turn that crosses a chapter boundary can
+  // only be announced once the new section is loaded -- the landing page does not exist before that
+  // -- and that is exactly the window the link may be down for, laying the chapter out. Announcing
+  // into a transport that is down would clear the latch on a send that never happened, and the peer
+  // would never hear the press at all: the halves would sit a page apart with nothing to fix it.
   int settledPage = 0;
   int32_t settledSpineIndex = 0;
-  if (announceWhenSettled && pendingAdvanceSteps == 0 && section &&
+  if (announceWhenSettled && pendingAdvanceSteps == 0 && section && pageflip->isLinkUp() &&
       pageflipSettledPage(settledSpineIndex, settledPage)) {
     announceWhenSettled = false;
     // Same test loop() uses. The flag tells the peer to show the end panel rather than a page it
@@ -1672,7 +1744,8 @@ void EpubReaderActivity::pageflipPump() {
   // the lock like every other outgoing position, and retried rather than dropped -- a greeting is
   // sent once, so losing the answer leaves the peer waiting indefinitely.
   uint32_t settledOffset = 0;
-  if (pageflipOweJoinDecline && pageflipSettledPosition(settledSpineIndex, settledPage, settledOffset)) {
+  if (pageflipOweJoinDecline && pageflip->isLinkUp() &&
+      pageflipSettledPosition(settledSpineIndex, settledPage, settledOffset)) {
     pageflipOweJoinDecline = false;
     pageflip->announcePresence(settledSpineIndex, settledPage, settledOffset);
   }

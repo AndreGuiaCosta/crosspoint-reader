@@ -183,6 +183,11 @@ class PageFlipSession {
   // later greetings, an unresolved one classifies the pair from them.
   bool isJoinResolved() const { return joinResolved; }
 
+  // Whether the link is actually carrying traffic. A message that has to arrive must wait for this
+  // rather than be sent into a transport that is down: the send would fail, and the caller that
+  // cleared its latch on the attempt would never send it again.
+  bool isLinkUp() const { return transport.isStarted(); }
+
   // Pumped once per frame. Returns true when a packet was received and `decision` was filled; the
   // decision may still be Ignore, which is not the same as "nothing arrived" -- only a decoded
   // packet from the paired book counts as peer contact for the auto-sleep timer (section 4).
