@@ -1279,6 +1279,7 @@ void EpubReaderActivity::pageflipEnd() {
   pageflipResumeOwnOffset = 0;
   pageflipPeerWasLost = false;
   pageflipLastHeartbeatMs = 0;
+  pageflipLastDiscoveryMs = 0;
   pageflipLinkUpMs = 0;
   pageflipBadgeVisible = false;
   pageflipCachedOffsetSpine = -1;
@@ -1754,6 +1755,27 @@ void EpubReaderActivity::pageflipPump() {
   // must not be computed while a render is in flight. Answering also sends this device's reply, so
   // a probe left unanswered would leave the peer waiting -- which is why it stays latched.
   if (pageflipJoinProbePending) pageflipAnswerJoinProbe();
+
+  // Nothing has ever answered, so say hello again. See DISCOVERY_REGREET_MS: the first greeting is
+  // the only one this device would otherwise send, and it is sent at the moment two devices started
+  // together are least likely to hear each other.
+  //
+  // repeatHello rather than announceHello, and the difference is not cosmetic: a repeat must not
+  // begin a join round. "Nothing has been heard" is read one pump before the queue is drained, so a
+  // peer's greeting can already be waiting when this fires -- and two greetings that each restart
+  // the other's round make the pair classify twice. That is not theoretical: it put the halves in
+  // the swapped arrangement, with the right device showing the page the left was already on.
+  if (lastPeerContactMs == 0 && pageflipCompatHash != 0 && pageflip->isLinkUp() &&
+      millis() - pageflipLinkUpMs < DISCOVERY_REGREET_WINDOW_MS &&
+      millis() - pageflipLastDiscoveryMs >= DISCOVERY_REGREET_MS) {
+    int discoveryPage = 0;
+    uint32_t discoveryOffset = 0;
+    int32_t discoverySpineIndex = 0;
+    if (pageflipSettledPosition(discoverySpineIndex, discoveryPage, discoveryOffset)) {
+      pageflipLastDiscoveryMs = millis();
+      pageflip->repeatHello(discoverySpineIndex, discoveryPage, discoveryOffset);
+    }
+  }
 
   // "Still here." It asks for nothing back, so two devices doing this do not talk each other into
   // an ever-growing exchange.

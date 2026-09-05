@@ -131,6 +131,10 @@ bool PageFlipSession::announceHello(int32_t spineIndex, int32_t pageNumber, uint
   return sendHello(spineIndex, pageNumber, visibleTextOffset, true, true, PageFlipJoinVerdict::Unknown);
 }
 
+bool PageFlipSession::repeatHello(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset) {
+  return sendHello(spineIndex, pageNumber, visibleTextOffset, true, false, PageFlipJoinVerdict::Unknown);
+}
+
 bool PageFlipSession::proposeResume(const int32_t spineIndex, const uint32_t visibleTextOffset) {
   // A position is only meaningful inside a pagination, and the sentinel is not one.
   if (compatHash == 0) return false;

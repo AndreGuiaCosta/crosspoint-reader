@@ -149,6 +149,15 @@ class PageFlipSession {
   // because a reply has a verdict to carry and this does not.
   bool announceHello(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset);
 
+  // The same greeting again, for a device that has never heard anything back. It asks for a reply
+  // like the first one, but it does NOT start a join round: repeating that part is what would make
+  // a peer classify the pair twice, and the second classification is the damaging one -- section
+  // 4.2's Identical case steps a device forward, so running it again steps it forward again.
+  //
+  // Beginning a round here is unnecessary as well as harmful: the round this device opened with its
+  // first greeting is still the one it is in, and nothing has happened in it.
+  bool repeatHello(int32_t spineIndex, int32_t pageNumber, uint32_t visibleTextOffset);
+
   // The reader's half of the join negotiation (section 4.2), in answer to a decision whose
   // `joinProbe` was set: the verdict this device computed against the offset the probe reported,
   // plus where this device itself is. Both have to arrive together -- the classification needs this

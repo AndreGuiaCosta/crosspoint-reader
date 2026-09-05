@@ -123,6 +123,19 @@ class EpubReaderActivity final : public Activity {
   // most visible way there is.
   static constexpr unsigned long PEER_PRESENCE_TIMEOUT_MS = PEER_HEARTBEAT_MS * 4;
   unsigned long pageflipLastHeartbeatMs = 0;
+  // Discovery is one packet, and one packet is not a protocol. The greeting goes out when the
+  // layout fingerprint first exists and never again unless it moves, so two devices switched on
+  // together -- each greeting before the other's radio is listening -- never meet, and a single
+  // dropped datagram has exactly the same permanent effect on a real radio. So it is repeated,
+  // slowly, while nothing has EVER been heard from a peer.
+  //
+  // Bounded, because a peer switched on later is found by ITS greeting, which this device is
+  // listening for: the window only has to cover devices starting at about the same time. Outside it
+  // a solo reader with paired reading left on goes back to costing nothing, which is the property
+  // the heartbeat's "has ever been in contact" gate exists to protect.
+  static constexpr unsigned long DISCOVERY_REGREET_MS = 3000;
+  static constexpr unsigned long DISCOVERY_REGREET_WINDOW_MS = 30000;
+  unsigned long pageflipLastDiscoveryMs = 0;
   // When the link came up, so the status badge can hold its tongue while a peer is still answering.
   // Without the grace period the badge draws on the very first render -- a greeting takes a moment
   // to come back -- and then has to be un-drawn, costing a second full refresh at every book open.

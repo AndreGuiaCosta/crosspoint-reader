@@ -43,6 +43,20 @@ long readEnvNumber(const char* name, long fallback, long minimum, long maximum) 
   return value;
 }
 
+// Test hook, host only: drop the first N datagrams this process asks to send. Discovery hangs on
+// a single greeting arriving, and on a real radio a lost packet is ordinary -- but on loopback it
+// never happens, so the case cannot be tested without asking for it. The send is reported as having
+// succeeded, because that is what a radio does: nothing tells a sender its packet was not heard.
+//
+// Same shape as the slot and port overrides above, and for the same reason: this transport exists
+// only on the host, so its test scaffolding does not reach a device.
+bool shouldDropSend() {
+  static long remaining = readEnvNumber("CROSSPOINT_PAGEFLIP_DROP_FIRST_SENDS", 0, 0, 1000);
+  if (remaining <= 0) return false;
+  --remaining;
+  return true;
+}
+
 sockaddr_in loopbackAddress(uint16_t port) {
   sockaddr_in address{};
   address.sin_family = AF_INET;
@@ -112,6 +126,7 @@ void PageFlipUdpTransport::end() {
 
 bool PageFlipUdpTransport::broadcast(const uint8_t* data, size_t length) {
   if (!isStarted() || data == nullptr || length == 0 || length > MAX_PAYLOAD_BYTES) return false;
+  if (shouldDropSend()) return true;
 
   // Every slot but our own: ESP-NOW does not loop a broadcast back to the sender, so neither does
   // this. Otherwise the protocol would need self-filtering that exists purely for the shim.
