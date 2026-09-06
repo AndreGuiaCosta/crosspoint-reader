@@ -627,6 +627,11 @@ bool Section::finalizeBuild() {
   partial_ = false;
   partialPageCount_ = 0;
   pageCount = builtPageCount_;
+  // The counterpart of "Suspended build" below: between them every build says how it ended. Without
+  // this the only signal a build had finished was the absence of further "Page N processed" lines,
+  // which is also what a build that has merely stopped for a while looks like -- and telling those
+  // two apart is the whole of the PageFlip cold-build guard.
+  LOG_DBG("SCT", "Build finalized: %u pages", builtPageCount_);
   return true;
 }
 
