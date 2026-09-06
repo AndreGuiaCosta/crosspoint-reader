@@ -410,8 +410,13 @@ void EpubReaderActivity::loop() {
   // partial's watermark until the build catches up, so the window check would wrongly read
   // "far enough ahead" and stall the build at 0 pages -- then the first turn past the
   // watermark re-parses the whole chapter synchronously. Keep ticking until it finalizes.
+  // A paired reader that has put its radio down for this build is the same case for a different
+  // reason: the link cannot come back until the build is over (a live BuildContext holds the heap
+  // under the tick floor, and the pair deadlocks -- see pageflipColdBuildOver), so stopping at the
+  // window would strand it. The ~60 KB the radio gave back is what makes finishing affordable.
   if (section && section->isBuilding() && !RenderLock::peek() &&
-      (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
+      (section->isPartial() || pageflipBuildingForSuspendedLink() ||
+       static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
       buildTickHeapGate()) {
     RenderLock lock;
     // Re-check under the lock: render() (which also holds the RenderLock) may have finalized the
@@ -1380,6 +1385,33 @@ bool EpubReaderActivity::pageflipSectionCacheMissing(const int spineIndex) const
   return !Storage.exists(path);
 }
 
+void EpubReaderActivity::pageflipSuspendForStalledBuild() {
+  if (!pageflip || pageflipHeapSuspended || !pageflip->isStarted()) return;
+  // The backstop for every build this reader starts anywhere other than a chapter crossing: loop()
+  // resuming a partial's extension near its watermark, and render()'s blocking extension when the
+  // reader crosses that watermark. Both call startBuild() and leave the BuildContext alive, so with
+  // the radio resident they reach the same deadlock the crossing path does -- ~45 KB of context on
+  // top of ~60 KB of radio puts free heap under BACKGROUND_BUILD_MIN_FREE_HEAP, buildTickHeapGate()
+  // then refuses every tick, and the only thing that would free the heap is the build it is
+  // refusing. Guarding the two call sites instead would need the same test in both and would still
+  // miss the next one; this asks the question the deadlock actually turns on.
+  // Heap first: it is a plain read, and it rejects almost every pump without touching the section.
+  if (ESP.getFreeHeap() >= BACKGROUND_BUILD_MIN_FREE_HEAP) return;
+  // `section` belongs to the render task, so it is never read from the pump unguarded -- doing that
+  // segfaulted the left sim half on nearly every run, and did not reproduce under gdb.
+  if (RenderLock::peek()) return;
+  {
+    RenderLock lock(*this);
+    if (!section || !section->isBuilding()) return;
+  }
+
+  LOG_INF("ERS", "Build stalled for want of heap; releasing the paired link to finish it");
+  pageflipHeapSuspended = true;
+  pageflipColdBuildSpine = currentSpineIndex;
+  pageflipColdBuildStartMs = millis();
+  pageflip->end();
+}
+
 void EpubReaderActivity::pageflipSuspendForColdBuild() {
   if (!pageflip || pageflipHeapSuspended) return;
   if (!pageflipSectionCacheMissing(currentSpineIndex)) return;
@@ -1420,18 +1452,35 @@ bool EpubReaderActivity::pageflipColdBuildOver() {
     // is permanent). Only elapsed time separates them.
     return millis() - pageflipColdBuildStartMs >= PAGEFLIP_COLD_BUILD_START_GRACE_MS;
   }
-  if (!section->isBuilding()) return true;
-  // A windowed build STAYS "building" after it has done its work. loop()'s tick stops once the
-  // build is far enough ahead of the reader and only resumes when the reader advances, so a settled
-  // reader leaves isBuilding() true indefinitely. Measured on two X4s 2026-09-05: the chapter was on
-  // screen and its last page processed at [466515], and isBuilding() was still true 68 s later with
-  // the heap flat at 53,316 B and not one page processed in between -- the link stayed down for the
-  // rest of the session and the pair fell back to solo.
+  // The build being over is the whole answer, and it has to be this literal one. An earlier version
+  // asked the weaker question "has the build done enough for now" (the window test loop() uses to
+  // decide whether to tick, negated) and resumed on that. It deadlocked the device: the radio came
+  // back on top of a live BuildContext, and that context holds ~45 KB, which is enough to put free
+  // heap under BACKGROUND_BUILD_MIN_FREE_HEAP -- the floor buildTickHeapGate() needs to advance the
+  // very build that would free it. Measured on two X4s 2026-09-05: 4,896 B free, not one further
+  // "Page N processed" in 55 s, and a chapter that could never finish. buildTickHeapGate()'s own
+  // comment names this state ("indefinitely, if the build context itself keeps the heap low").
   //
-  // So the question is not "has the build finished" but "is it still doing work", and loop() already
-  // answers that: the same condition it uses to decide whether to tick, negated.
-  return !section->isPartial() &&
-         static_cast<int>(section->pageCount) >= section->currentPage + BUILD_WINDOW_AHEAD;
+  // While the link is down there is ~60 KB more to work with, so loop() ticks this build past its
+  // window (see the pageflipHeapSuspended term there) and it finishes in seconds rather than idling.
+  return !section->isBuilding();
+}
+
+bool EpubReaderActivity::pageflipColdBuildOverdue() const {
+  return pageflipHeapSuspended && millis() - pageflipColdBuildStartMs >= PAGEFLIP_COLD_BUILD_DEADLINE_MS;
+}
+
+void EpubReaderActivity::pageflipReleaseOverdueBuild() {
+  // BUILD_WINDOW_AHEAD's comment states the unbounded case as a design fact: "a giant single-spine
+  // book therefore never finalizes its .bin in one sitting". Waiting for isBuilding() to clear would
+  // hold the pair down for the rest of that book, so past the deadline the build is put down instead
+  // of waited on. suspendBuild() persists the pages already laid out as a partial and frees the
+  // BuildContext, which is the point: the radio must never come back on top of a live build.
+  if (RenderLock::peek()) return;
+  RenderLock lock(*this);
+  if (!section || !section->isBuilding()) return;
+  LOG_INF("ERS", "Chapter build too long for a paired reader; suspending it to bring the link back");
+  section->suspendBuild();
 }
 
 void EpubReaderActivity::pageflipResumeAfterColdBuild() {
@@ -1445,6 +1494,7 @@ void EpubReaderActivity::pageflipResumeAfterColdBuild() {
   // precisely because the radio has just left. Measured 2026-09-05: the link came back 43 ms after
   // it went down, before the build had begun, and the chapter was laid out with the radio resident
   // anyway (bottomed at 5,084 B free, and the build failed).
+  if (pageflipColdBuildOverdue()) pageflipReleaseOverdueBuild();
   const uint32_t freeHeap = ESP.getFreeHeap();
   const bool built = pageflipColdBuildOver();
   if (!built || freeHeap < PAGEFLIP_COLD_BUILD_RESUME_MIN_FREE_HEAP) {
@@ -1765,7 +1815,9 @@ void EpubReaderActivity::pageflipPump() {
 
   // A link put down for a chapter build comes back here, for the same reason section 6's does: the
   // condition is re-tested every pump rather than hooked to an event, so nothing has to remember to
-  // ask.
+  // ask. The suspend before it is the backstop for builds that started somewhere other than a
+  // chapter crossing, and it is asked first so a stall is never carried for a whole extra pump.
+  pageflipSuspendForStalledBuild();
   pageflipResumeAfterColdBuild();
 
   // Owed steps first: they are what a boundary crossing left behind, and the announce below must

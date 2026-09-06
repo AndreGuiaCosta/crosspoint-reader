@@ -952,6 +952,77 @@ for the other device.
 
 ---
 
+## 6.1 Heap coexistence — the radio and a section build do not fit
+
+Written after the fact, from four bench runs. This is the second case where the link has to stand
+down, and unlike §6 it is not about another radio: it is about RAM.
+
+Two things want the same memory:
+
+- the ESP-NOW transport, measured at **~60 KB** on an X4
+- an in-progress `Section` build, whose `BuildContext` — the live `ChapterHtmlSlimParser` plus the
+  strings it holds by reference ([Section.h:37](../lib/Epub/Epub/Section.h)) — costing **~45 KB**
+
+On a 273 KB heap with the reader's own baseline those two do not both fit. A cold chapter crossing
+with the link up bottomed out at **4,384 B** free on one device and **5,084 B** on another, and one
+of those builds failed outright. So `pageflipSuspendForColdBuild()` puts the transport down for a
+crossing into a chapter with no cached layout and brings it back afterwards. The session survives;
+only the transport goes, because tearing the session down would reset `turnSeq` and re-negotiate the
+spread at every chapter boundary.
+
+### The resume condition is the whole difficulty, and two plausible versions of it are wrong
+
+**"Resume once the section is no longer building" is wrong on its own.** `advanceOnePage()` resets
+the section and suspends in the same breath, so the next pump sees a *null* section — which is not
+"building" — and a free heap that looks healthy precisely because the radio has just left. Measured:
+the link came back 43 ms after it went down, before the build had begun, and the chapter was laid
+out with the radio resident anyway. The fix is to latch the spine at the suspend, and to separate
+"the build has not started yet" from "the build failed and reset the section" by elapsed time.
+
+**"Resume once the build is far enough ahead of the reader" is worse — it deadlocks the device.**
+`loop()` stops ticking a build once it is `BUILD_WINDOW_AHEAD` pages ahead, so a settled reader
+leaves `isBuilding()` true indefinitely, which is what made that weaker test look necessary. But
+resuming on it hands the radio back to a build still holding its `BuildContext`, and the resulting
+free heap is below `BACKGROUND_BUILD_MIN_FREE_HEAP` (32 KB) — the floor `buildTickHeapGate()`
+requires before it will advance the very build that would release the memory. Nothing breaks the
+cycle. Measured on two X4s: 4,896 B free, not one further page processed in 55 s, a chapter that
+could never finish, and a reader below its own `RENDER_MIN_FREE_HEAP` as well.
+`buildTickHeapGate()`'s own comment had already named this state — "indefinitely, if the build
+context itself keeps the heap low" — before anything reached it.
+
+### The rule
+
+> **While the PageFlip link is up, the reader must not hold an active background build.**
+
+The resume waits for the build to be genuinely over, and `loop()` ticks a build past its window
+while the link is suspended: with the radio away there is ~60 KB more to work with, so the chapter
+finishes in seconds instead of idling forever.
+
+Two consequences worth stating rather than rediscovering:
+
+- **The rule needs a deadline.** `BUILD_WINDOW_AHEAD`'s own comment records the unbounded case as a
+  design fact — a giant single-spine book never finalizes in one sitting. Past
+  `PAGEFLIP_COLD_BUILD_DEADLINE_MS` the build is put down rather than waited on:
+  `Section::suspendBuild()` persists the pages already laid out as a partial and frees the context,
+  which is what lets the radio return without landing on top of it.
+- **A chapter crossing is not the only way to start a build.** `loop()` restarts a partial's
+  extension near its watermark, and `render()` runs a blocking extension when the reader crosses
+  that watermark; both call `startBuild()` and leave the context alive afterwards. Guarding those
+  two sites by hand would need the same test twice and would still miss the next one, so the pump
+  asks the question the deadlock actually turns on: a live build that can no longer be ticked puts
+  the link down, wherever it came from.
+
+### What the simulator can and cannot show here
+
+`CROSSPOINT_SIM_FREE_HEAP` makes the heap query *report* a figure. It cannot make an allocation
+fail, and it cannot express the coupling that makes this a deadlock — free heap falling *because* a
+build context is alive. `run_sim_pair_heapbuild.sh` therefore asserts the **invariant** rather than
+the failure: the build must have finalized before the link returns. That makes the deadlock
+unreachable by construction and is checkable from log ordering. The deadlock itself has only ever
+been observed on hardware, and only hardware can show it is gone.
+
+---
+
 ## 7. Power — the honest unknown
 
 `LOW_POWER_FREQ = 10` MHz on X4 (`#if BOARD_HAS_PSRAM` → 80, else 10;

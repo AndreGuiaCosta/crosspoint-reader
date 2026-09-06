@@ -208,6 +208,21 @@ class EpubReaderActivity final : public Activity {
   // trace it leaves -- and that is also what the moments before render() constructs the new one look
   // like. This separates them: past this, a chapter that still is not there is not coming.
   static constexpr unsigned long PAGEFLIP_COLD_BUILD_START_GRACE_MS = 5000;
+  // How long the pair stays down for one chapter before the build is put down instead of waited on.
+  //
+  // The link now waits for the build to be genuinely over rather than merely far enough ahead,
+  // because handing the radio back to a live build deadlocks the device (see pageflipColdBuildOver).
+  // But BUILD_WINDOW_AHEAD's comment states the unbounded case as a design fact -- a giant
+  // single-spine book never finalizes in one sitting -- so an unconditional wait would cost the pair
+  // the rest of that book. Sized well past an ordinary cold chapter (a 14-page one measured ~15 s on
+  // an X4) so it is the giant-spine escape hatch and not a second path an ordinary crossing takes.
+  //
+  // Being generous is also what stops the escape hatch from flapping. The release persists a partial
+  // and loop() restarts a partial's extension once the reader is within PARTIAL_REBUILD_START_MARGIN
+  // (15 pages) of its watermark -- which would suspend the link again. At ~100-300 ms per page this
+  // long a build leaves a watermark hundreds of pages ahead of the reader, far outside that margin,
+  // so the restart does not fire until the reader has actually read most of the way there.
+  static constexpr unsigned long PAGEFLIP_COLD_BUILD_DEADLINE_MS = 45000;
   // Whether the link is down for a build rather than for WiFi (section 6) or by choice. Kept apart
   // from pageflipWifiSuspended precisely so the two resume paths cannot be confused: they wait on
   // different things and one must not clear the other's latch.
@@ -337,6 +352,15 @@ class EpubReaderActivity final : public Activity {
   // true the whole time, and without this the loop would spin at full CPU speed doing
   // no build work — indefinitely, if the build context itself keeps the heap low.
   bool buildHeapPaused = false;
+  // True while this reader has put its PageFlip radio down for the build that is running, which is
+  // the one case where the build must run to completion instead of stopping at BUILD_WINDOW_AHEAD:
+  // the link cannot come back until the build is over, and an idle-but-live build never gets there.
+  // A plain member read would not compile with paired reading switched off, hence the pair.
+#ifdef FREEINK_CAP_PAGEFLIP
+  bool pageflipBuildingForSuspendedLink() const { return pageflipHeapSuspended; }
+#else
+  static constexpr bool pageflipBuildingForSuspendedLink() { return false; }
+#endif
   // Heap floor for optional render-adjacent work (idle prewarm). Page
   // deserialization (TextBlock word vectors/strings) and glyph caching allocate
   // through throwing paths that abort() on OOM; skip deferrable work below it.
@@ -453,6 +477,16 @@ class EpubReaderActivity final : public Activity {
   // Whether the chapter the link was released for has finished, one way or the other. Taken under
   // the render lock, because the section it reads belongs to the render task.
   bool pageflipColdBuildOver();
+  // Whether this suspension has run past PAGEFLIP_COLD_BUILD_DEADLINE_MS. Cheap and lock-free, so
+  // the pump can ask it before paying for the lock the release below needs.
+  bool pageflipColdBuildOverdue() const;
+  // Persists the overdue build as a partial and frees its BuildContext, so the link can come back
+  // without landing on top of it. Taken under the render lock: the section belongs to the render task.
+  void pageflipReleaseOverdueBuild();
+  // Backstop for builds started away from a chapter crossing (loop()'s partial extension,
+  // render()'s blocking one): puts the link down when a live build can no longer be ticked, which
+  // is the deadlock the crossing guard prevents by hand.
+  void pageflipSuspendForStalledBuild();
   // Whether this spine has no finished layout on the SD card, so reaching it means a full build.
   bool pageflipSectionCacheMissing(int spineIndex) const;
   // Drops back to solo reading and arms the notice. A peer that cannot apply our turns must not
