@@ -8,11 +8,8 @@
 #include <PageFlipTransport.h>
 
 #include <memory>
-#include <string>
 
-#include "activities/Activity.h"
-#include "components/UITheme.h"
-#include "util/ButtonNavigator.h"
+#include "activities/UiListActivity.h"
 
 class MappedInputManager;
 
@@ -22,20 +19,22 @@ class MappedInputManager;
 // beacons only go out from here, so a device can only be discovered by somebody who also asked to
 // pair. Listing every reader that had ever transmitted would put "is that one mine?" on the user,
 // with a hex string to answer it.
-class PageFlipPairingActivity final : public Activity {
+class PageFlipPairingActivity final : public UiListActivity {
  public:
   explicit PageFlipPairingActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("PageFlipPairing", renderer, mappedInput) {}
+      : UiListActivity("PageFlipPairing", renderer, mappedInput) {}
 
   void onEnter() override;
   void onExit() override;
   void loop() override;
-  void render(RenderLock&&) override;
 
  private:
   // A device heard from since this screen opened.
   struct Peer {
     uint8_t mac[PageFlipTransport::MAC_BYTES] = {};
+    // Formatted once when the device is first heard rather than per render: the list holds borrowed
+    // pointers, so the text has to outlive the frame anyway.
+    char macText[PageFlipMac::TEXT_LENGTH] = "";
     PageFlipRole role = PageFlipRole::Left;
     unsigned long lastSeenMs = 0;
   };
@@ -52,6 +51,16 @@ class PageFlipPairingActivity final : public Activity {
   // How long "now do the same on the other device" stays up before the screen closes itself.
   static constexpr unsigned long CONFIRM_NOTICE_MS = 2500;
 
+  // --- UiListActivity contract ---
+  int listCount() const override { return rowCount(); }
+  void buildScreen(UiScreen& screen) override;
+  void activateIndex(int index) override;
+  // The header carries a subtitle the default chrome has no slot for, so it is drawn here instead.
+  void drawChrome() override;
+  // The base draws this last, which is where the confirmation notice has to go: over the list it is
+  // about, and inside the same frame, so making a choice does not cost a second e-ink refresh.
+  void drawFooter() override;
+
   void sendBeacon();
   void receiveBeacons();
   void expirePeers();
@@ -59,18 +68,15 @@ class PageFlipPairingActivity final : public Activity {
   // Row 0 is "any nearby device"; the peers follow it.
   int rowCount() const { return static_cast<int>(1 + peerCount); }
   bool isSelectedRow(int index) const;
-  std::string rowTitle(int index) const;
-  std::string rowSubtitle(int index) const;
-
-  void onBack() { finish(); }
 
   std::unique_ptr<PageFlipTransport> transport;
-  ButtonNavigator buttonNavigator;
-  int selectedIndex = 0;
 
   Peer peers[MAX_PEERS];
   size_t peerCount = 0;
   unsigned long lastBeaconMs = 0;
+  // Row storage handed to the list on each build. Borrowed pointers only -- every string it names
+  // is either a translation or a peer's own macText, and both outlive the frame.
+  freeink::ui::ListItem rowItems[MAX_PEERS + 1];
 
   // This device's own MAC, shown in the header so the two screens can be told apart. Without it the
   // user is choosing between hex strings with nothing to match them against.

@@ -82,7 +82,7 @@ class Section {
   // each bump happened lives beside SECTION_FILE_VERSION in Section.cpp, which aliases this so the
   // number has one home. Exposed because it is the only portable answer to "would another device
   // paginate this the same way", which PageFlip's compatibility hash needs (docs/pageflip.md §5).
-  static constexpr uint8_t FILE_VERSION = 36;
+  static constexpr uint8_t FILE_VERSION = 45;
 
   uint16_t pageCount = 0;
   int currentPage = 0;
