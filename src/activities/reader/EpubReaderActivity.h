@@ -61,6 +61,9 @@ class EpubReaderActivity final : public ReaderActivity {
   // Broadcast the local turn only once its steps have settled, so the position on the wire is the
   // page actually being shown rather than a half-applied one.
   bool announceWhenSettled = false;
+  // ...and whether it is a turn or a jump. Only a chapter skip sets this: it is the one move whose
+  // landing the peer cannot compute from its own position, so it must be seeked to, not stepped.
+  bool announceAsJump = false;
   unsigned long lastPeerContactMs = 0;
   // A started link is not a peer. Until one answers, this device reads exactly as it does today --
   // one page per press -- because a lone device advancing by two would turn two pages on every

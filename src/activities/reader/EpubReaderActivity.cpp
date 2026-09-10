@@ -1285,6 +1285,7 @@ void EpubReaderActivity::pageflipEnd() {
   pageflipTransport.reset();  // releases the radio state: a solo reader pays nothing for the link
   pendingAdvanceSteps = 0;
   announceWhenSettled = false;
+  announceAsJump = false;
   pageflipPeerPresent = false;
   pageflipCompatHash = 0;
   pageflipCompatMismatch = false;
@@ -1855,7 +1856,12 @@ void EpubReaderActivity::pageflipPump() {
     // Same test loop() uses. The flag tells the peer to show the end panel rather than a page it
     // does not have (section 3, end of book).
     const bool atEnd = settledSpineIndex > 0 && settledSpineIndex >= epub->getSpineItemsCount();
-    pageflip->announceLocalTurn(pendingAdvanceForward, settledSpineIndex, settledPage, atEnd);
+    if (announceAsJump) {
+      announceAsJump = false;
+      pageflip->announceLocalJump(settledSpineIndex, settledPage, atEnd);
+    } else {
+      pageflip->announceLocalTurn(pendingAdvanceForward, settledSpineIndex, settledPage, atEnd);
+    }
   }
 
   // Owed greeting answer. Latched by the receive path below so the answer's position is read under
@@ -2198,7 +2204,10 @@ bool EpubReaderActivity::skipPages(int amount) {
   // the same path a divergent join uses. Dropping the section is a cold build like any other.
   const auto announceAndSuspend = [this](const bool crossedChapter) {
 #ifdef FREEINK_CAP_PAGEFLIP
-    if (pageflip && pageflipPeerPresent) announceWhenSettled = true;
+    if (pageflip && pageflipPeerPresent) {
+      announceWhenSettled = true;
+      announceAsJump = true;
+    }
     if (crossedChapter) pageflipSuspendForColdBuild();
 #else
     (void)this;

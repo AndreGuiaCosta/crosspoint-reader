@@ -66,9 +66,20 @@ bool PageFlipSession::winsTiebreakAgainst(const uint8_t peerMac[PageFlipTranspor
 }
 
 bool PageFlipSession::announceLocalTurn(bool forward, int32_t spineIndex, int32_t pageNumber, bool atBookEnd) {
+  return broadcastTurn(forward, spineIndex, pageNumber, atBookEnd, 1);
+}
+
+bool PageFlipSession::announceLocalJump(int32_t spineIndex, int32_t pageNumber, bool atBookEnd) {
+  // Two, not one: the gap is the message. Direction is meaningless for a seek and the receiver
+  // overrides it by role anyway, so forward is passed as the harmless default rather than invented.
+  return broadcastTurn(true, spineIndex, pageNumber, atBookEnd, 2);
+}
+
+bool PageFlipSession::broadcastTurn(bool forward, int32_t spineIndex, int32_t pageNumber, bool atBookEnd,
+                                    uint32_t seqStep) {
   // The counter advances even when nothing is listening. A peer that joins later adopts the higher
   // value (section 3), so a solo run does not leave the pair permanently out of step.
-  ++turnSeq;
+  turnSeq += seqStep;
   lastLocalForward = forward;
   hasLocalTurn = true;
 

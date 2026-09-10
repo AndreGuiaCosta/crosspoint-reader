@@ -138,6 +138,13 @@ class PageFlipSession {
   // error: reading must never block on the pair.
   bool announceLocalTurn(bool forward, int32_t spineIndex, int32_t pageNumber, bool atBookEnd);
 
+  // A local move that landed somewhere no count of turns describes -- a chapter skip. It carries
+  // the same position as a turn but leaves a GAP in turnSeq on purpose, so the peer takes the
+  // "turns were missed, seek absolutely" branch of poll() and heals to the position here instead of
+  // stepping two pages from its own. Announcing a skip as an ordinary turn is contiguous, and the
+  // peer would step: the halves end up in different chapters with nothing to bring them back.
+  bool announceLocalJump(int32_t spineIndex, int32_t pageNumber, bool atBookEnd);
+
   // Says "I am here, reading this, my counter is at N, and here is where in the text I am". Sent
   // when the reader opens the book and again whenever this device's layout changes. Presence has to
   // be established before turns may advance by two: a link that came up is not a peer that is
@@ -243,6 +250,10 @@ class PageFlipSession {
  private:
   // Lower MAC wins a conflict (section 3). Returns true when this device is the winner.
   bool winsTiebreakAgainst(const uint8_t peerMac[PageFlipTransport::MAC_BYTES]) const;
+
+  // Shared by announceLocalTurn() and announceLocalJump(). seqStep is how far the counter moves:
+  // 1 is contiguous and the peer steps, anything more is a gap and the peer seeks.
+  bool broadcastTurn(bool forward, int32_t spineIndex, int32_t pageNumber, bool atBookEnd, uint32_t seqStep);
 
   // Forgets everything heard about the peer's position and re-arms the classification. Called when
   // either device greets, which is the definition of a join starting: a greeting is what a device
